@@ -141,3 +141,6 @@ The only way to change the maximum number of iterations is to change the source 
 
 The busy beaver rejection algorithms are simple and err on the side of safety, in the sense that no valid busy beavers are rejected, but a lot of unfruitful busy beavers are allowed to run. There are several semi-obvious rejection schemes which could be implemented. For example, Turing machine tables have a kind of symmetry, where more than one machine performs exactly the same. These symmetries are due to the fact that the number associated with a state is not germain (except for state 0 which is the initial state). Also, it does not matter whether a machine moes to the left or right -- which gives a two-fold symmetry. These are not currently considered in the rejection procedures.
 
+## See also
+
+https://www.mijagourlay.com/turingmachine
