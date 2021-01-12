@@ -1,0 +1,2190 @@
+{\rtf\ansi\deff0
+{\fonttbl{\f0\fswiss Courier New;}}
+{\colortbl;\red0\green0\blue0;\red64\green64\blue64;\red127\green127\blue127;\red191\green191\blue191;\red217\green217\blue217;\red229\green229\blue229;\red242\green242\blue242;\red0\green0\blue255;\red95\green158\blue160;\red184\green134\blue11;\red85\green107\blue47;\red178\green34\blue34;\red34\green139\blue34;\red0\green255\blue0;\red218\green112\blue214;\red160\green32\blue240;\red255\green0\blue0;\red188\green143\blue143;\red143\green188\blue143;\red193\green255\blue193;\red180\green238\blue180;\red155\green205\blue155;\red105\green139\blue105;\red237\green218\blue116;\red67\green183\blue186;\red100\green233\blue134;\red247\green101\blue65;\red154\green254\blue255;\red211\green211\blue211;}
+{\i {\cf12 /* tm.c: Turing Machine simulator\line
+//\line
+// Written and Copyright (C) 1997 by Michael J. Gourlay\line
+//\line
+// Provided as is.  No warrentees, express or implied.\line
+*/}}\line
+\line
+#{\b {\cf9 include}} {\b {\cf18 <stdio.h>}}\line
+#{\b {\cf9 include}} {\b {\cf18 <stdlib.h>}}\line
+#{\b {\cf9 include}} {\b {\cf18 <string.h>}}\line
+#{\b {\cf9 include}} {\b {\cf18 <unistd.h>}}\line
+#{\b {\cf9 include}} {\b {\cf18 <signal.h>}}\line
+#{\b {\cf9 include}} {\b {\cf18 <alloca.h>}}\line
+\line
+#{\b {\cf9 ifndef}} {\cf10 sun}\line
+#{\b {\cf9 include}} {\b {\cf18 <getopt.h>}}\line
+#{\b {\cf9 endif}}\line
+\line
+#{\b {\cf9 include}} {\b {\cf18 <curses.h>}}\line
+#{\b {\cf9 include}} {\b {\cf18 <limits.h>}}\line
+#{\b {\cf9 include}} {\b {\cf18 <signal.h>}}\line
+\line
+#{\b {\cf9 include}} {\b {\cf18 "fifo.h"}}\line
+\line
+#{\b {\cf9 include}} {\b {\cf18 "tm.h"}}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* MAX: return larger of the two input numbers */}}\line
+#{\b {\cf9 define}} {\b {\cf8 MAX}}(a,b) (((a)>(b))?(a):(b))\line
+\line
+#{\b {\cf9 define}} {\b {\cf8 ABS}}(a)   (((a)<0)?(-(a)):(a))\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* tmNew: allocate and initialize a new Turing Machine\line
+//\line
+// DESCRIPTION\line
+//   Allocates a new Turing Machine object.  tmNew should always be\line
+//   used by the client to instantiate a new Turing Machine object.\line
+//   The client should not allocate space for a Turing Machine without\line
+//   using tmNew, since the other Turing Machine methods depend on the\line
+//   initializations done in tmNew.\line
+//\line
+// RETURN VALUE\line
+//   Return the address of the new Turing Machine object.\line
+//   Returns NULL if memory could not be allocated.\line
+*/}}\line
+TuringMachineT *\line
+{\b {\cf8 tmNew}}({\b {\cf13 void}})\line
+\{\line
+  TuringMachineT *tm;\line
+  {\b {\cf16 if}}((tm = (TuringMachineT*) calloc(1, {\b {\cf16 sizeof}}(TuringMachineT)))==NULL)\line
+  \{\line
+    {\b {\cf16 return}} NULL;\line
+  \}\line
+\line
+  tm->charset_max = -1;\line
+  tm->state       = 0;\line
+  tm->table       = NULL;\line
+  tm->num_states  = 0;\line
+  tm->here        = 0;\line
+  tm->tape_len    = 0;\line
+  tm->tape        = NULL;\line
+\line
+  {\b {\cf16 return}} tm;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeFree: free memory of a Turing Machine tape\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 tmTapeFree}}(TuringMachineT *this)\line
+\{\line
+  {\b {\cf16 if}}(this->tape != NULL) \{\line
+    free(this->tape);\line
+    this->tape = NULL;\line
+  \}\line
+  this->tape_len = 0;\line
+  this->here     = 0;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTableRead: read a Turing Machine state transition table from a file\line
+//\line
+//\line
+// Table file format: Each line can either be one of the following:\line
+//   charset_max <integer>\line
+//     indicates the charset_max for this TM.\line
+//     'charset_max' must occur before any 'state' lines.\line
+//   state\line
+//     indicates that table entries for a new state are to be read.\line
+//     'state' must occur before any 'input' lines.\line
+//   input <integer> write <integer> move <L|R|S> next <integer>\line
+//     indicates table entry for the current (state,input) tuple.\line
+//   #\line
+//     comment line\line
+//   blank line\line
+//\line
+// Any table that has a "next state" entry which refers to a non-existent\line
+// state is not a valid table.\line
+//\line
+//\line
+// RETURN VALUE\line
+//   Returns a negative value if there is an error.\line
+//   Returns a positive value if the table was read without error.\line
+*/}}\line
+int64_t\line
+{\b {\cf8 tmTableRead}}(TuringMachineT *this, {\b {\cf13 char}} *filename)\line
+\{\line
+  int32_t charset_max   = -1;\line
+  int32_t state         = -1; {\i {\cf12 /* current state being read */}}\line
+  int32_t si;                 {\i {\cf12 /* state index for loop */}}\line
+  int32_t input;              {\i {\cf12 /* input character for this table entry */}}\line
+  int32_t write;              {\i {\cf12 /* character to write for this (state, input) */}}\line
+  int32_t next;               {\i {\cf12 /* next state for this (state, input) */}}\line
+  {\b {\cf13 char}} move;               {\i {\cf12 /* direction to move head for this (state, input) */}}\line
+  int32_t line_num       = 0; {\i {\cf12 /* input line number, for debugging */}}\line
+  {\b {\cf13 char}} line[1024];         {\i {\cf12 /* file line buffer */}}\line
+  FILE *stream;            {\i {\cf12 /* file stream */}}\line
+  int32_t max_refd_state = 0; {\i {\cf12 /* number of the highest refered to state */}}\line
+  Entry *table     = NULL; {\i {\cf12 /* table memory place */}}\line
+  Entry **tablePP  = NULL; {\i {\cf12 /* table array of pointers */}}\line
+\line
+  {\b {\cf16 if}}((stream=fopen(filename, {\b {\cf18 "r"}}))==NULL) \{\line
+    fprintf(stderr, {\b {\cf18 "tmTableRead: error opening '%s'\\n"}}, filename);\line
+    {\b {\cf16 return}} -1;\line
+  \}\line
+\line
+  {\b {\cf16 while}}(fgets(line, 1023, stream)) \{\line
+    line[strlen(line)-1] = {\b {\cf18 '\\0'}}; {\i {\cf12 /* remove trailing newline */}}\line
+\line
+    line_num++;\line
+\line
+    {\b {\cf16 if}}(sscanf(line, {\b {\cf18 "charset_max %li"}}, &charset_max)==1) \{\line
+      {\b {\cf16 if}}(this->charset_max >= 0) \{\line
+        fprintf(stderr,\line
+                {\b {\cf18 "tmTableRead: %li: encountered more than one 'charset_max'\\n"}},\line
+                line_num);\line
+        fprintf(stderr,\line
+                {\b {\cf18 "tmTableRead: previous value charset_max=%li\\n"}},\line
+                charset_max);\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -2;\line
+      \} {\b {\cf16 else}} \{\line
+        this->charset_max = charset_max;  {\i {\cf12 /* type conversion */}}\line
+      \}\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(!strncmp(line, {\b {\cf18 "state"}}, 5)) \{\line
+      {\b {\cf16 if}}(charset_max < 0) \{\line
+        fprintf(stderr,\line
+                {\b {\cf18 "tmTableRead: %li: must have 'charset_max' before 'state'\\n"}},\line
+                line_num);\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -3;\line
+      \}\line
+\line
+      state ++;\line
+      this->num_states = state + 1;\line
+\line
+      {\i {\cf12 /* Allocate a new state line for the TM */}}\line
+      {\b {\cf16 if}}((table = realloc(table,\line
+                          {\b {\cf16 sizeof}}(Entry) * (charset_max + 1) * this->num_states)\line
+         )==NULL)\line
+      \{\line
+        fprintf(stderr, {\b {\cf18 "tmTableRead: out of memory\\n"}});\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -4;\line
+      \}\line
+      {\b {\cf16 if}}((tablePP = realloc(tablePP, {\b {\cf16 sizeof}}(Entry*) * this->num_states))==NULL)\line
+      \{\line
+        fprintf(stderr, {\b {\cf18 "tmTableRead: out of memory\\n"}});\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -4;\line
+      \}\line
+\line
+      {\b {\cf16 for}}(si=0; si < this->num_states; si++) \{\line
+        tablePP[si] = &table[si * (charset_max+1)];\line
+      \}\line
+\line
+      this->table = tablePP;\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(sscanf(line, {\b {\cf18 "input %li write %li move %c next %li"}},\line
+              &input, &write, &move, &next) == 4)\line
+    \{\line
+      {\b {\cf16 if}}(state < 0) \{\line
+        fprintf(stderr,\line
+                {\b {\cf18 "tmTableRead: %li: must have 'state' before 'input'\\n"}},\line
+                line_num);\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -5;\line
+      \}\line
+\line
+      {\b {\cf16 if}}((input < 0) || (input > charset_max)) \{\line
+        fprintf(stderr, {\b {\cf18 "tmTableRead: %li: bad value for input: %li\\n"}},\line
+                line_num, input);\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -6;\line
+      \}\line
+\line
+      {\i {\cf12 /* Store table entry */}}\line
+      {\b {\cf16 if}}((write < 0) || (write > charset_max)) \{\line
+        fprintf(stderr, {\b {\cf18 "tmTableRead: %li: bad value for write: %li\\n"}},\line
+                line_num, write);\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -7;\line
+      \}\line
+      this->table[state][input].write = write;  {\i {\cf12 /* type conversion */}}\line
+\line
+      {\b {\cf16 if}}(next < 0) \{\line
+        fprintf(stderr, {\b {\cf18 "tmTableRead: %li: bad value for next: %li\\n"}},\line
+                line_num, next);\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -8;\line
+      \}\line
+      this->table[state][input].next = next;  {\i {\cf12 /* type conversion */}}\line
+      max_refd_state = MAX(max_refd_state, next);\line
+\line
+      {\b {\cf16 if}}(move == {\b {\cf18 'L'}}) \{\line
+        this->table[state][input].move = MOVE_LEFT;\line
+      \} {\b {\cf16 else}} {\b {\cf16 if}}(move == {\b {\cf18 'R'}}) \{\line
+        this->table[state][input].move = MOVE_RIGHT;\line
+      \} {\b {\cf16 else}} {\b {\cf16 if}}(move == {\b {\cf18 'S'}}) \{\line
+        this->table[state][input].move = STOP;\line
+      \} {\b {\cf16 else}} \{\line
+        fprintf(stderr,\line
+          {\b {\cf18 "tmTableRead: %li: bad value for move: %c\\n"}}, line_num, move);\line
+        fclose(stream);\line
+        {\b {\cf16 return}} -9;\line
+      \}\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(line[0]=={\b {\cf18 '#'}}) \{\line
+      {\i {\cf12 /* comment line. */}}\line
+      printf({\b {\cf18 "%s\\n"}}, line);\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(line[0] == {\b {\cf18 '\\0'}}) \{\line
+      {\i {\cf12 /* blank line. Do nothing */}}\line
+\line
+    \} {\b {\cf16 else}} \{\line
+      fprintf(stderr, {\b {\cf18 "tmTableRead: %li: invalid line: '%s'\\n"}},\line
+              line_num, line);\line
+      fclose(stream);\line
+      {\b {\cf16 return}} -11;\line
+    \}\line
+  \}\line
+\line
+  fclose(stream);\line
+\line
+  {\b {\cf16 if}}(max_refd_state > state) \{\line
+    fprintf(stderr, {\b {\cf18 "tmTableRead: refered to non-existent state %li\\n"}},\line
+            max_refd_state);\line
+    fclose(stream);\line
+    {\b {\cf16 return}} -12;\line
+  \}\line
+\line
+  {\b {\cf16 return}} state;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeIndex: translates the signed value of "here" into an index for tape[]\line
+//\line
+//\line
+// DESCRIPTION\line
+//   if here >= 0, tapeIndex(here) = here * 2\line
+//   if here < 0 , tapeIndex(here) = - (here * 2 + 1)\line
+//\line
+//   The tape index has the property that negative values of here map to\line
+//   odd values of the index, and non-negative values of here map\line
+//   to even values of the index, such that no elements of tape[] are\line
+//   wasted.\line
+//\line
+//\line
+// RETURN VALUE\line
+//   Returns a positive integer which is the index into this->tape[]\line
+//   which corresponds to the (possibly negative) signed this->here\line
+//   tape head position.\line
+*/}}\line
+#{\b {\cf9 ifdef}} {\cf10 FUNCTION}\line
+int64_t\line
+{\b {\cf8 tmTapeIndex}}({\b {\cf13 const}} TuringMachineT *this)\line
+\{\line
+  {\b {\cf16 if}}(this->here >= 0) \{\line
+    {\b {\cf16 return}} this->here * 2;\line
+  \} {\b {\cf16 else}} \{\line
+    {\b {\cf16 return}} - (this->here * 2 + 1);\line
+  \}\line
+\}\line
+#{\b {\cf9 else}}\line
+#{\b {\cf9 define}} {\b {\cf8 tmTapeIndex}}(this) \\line
+  (((this)->here >= 0) ? (((this)->here)*2) : (-(((this)->here)*2+1)))\line
+#{\b {\cf9 endif}}\line
+\line
+\line
+\line
+\line
+#{\b {\cf9 define}} {\b {\cf8 tmTapeFrame}}(this) ((this)->tape[tmTapeIndex(this)])\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeHead: return Turing Machine tape head location given tape index\line
+//\line
+//\line
+// DESCRIPTION\line
+//   tmTapeHead is the inverse of tmTapeIndex.\line
+//\line
+//   If index is even, here is non-negative.\line
+//   If index is odd, here is negative.\line
+//   index == 0 corresponds to a this->here == 0.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeIndex\line
+*/}}\line
+int64_t\line
+{\b {\cf8 tmTapeHead}}({\b {\cf13 const}} TuringMachineT *this, int64_t index)\line
+\{\line
+  {\b {\cf16 if}}(index % 2 == 0) \{\line
+    {\b {\cf16 return}} index / 2;\line
+  \} {\b {\cf16 else}} \{\line
+    {\b {\cf16 return}} - (index+1) / 2;\line
+  \}\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTableIndex: return lexical index of the Turing machine table\line
+//\line
+//\line
+// DESCRIPTION\line
+//   When systematically generating all possible Turing machine state\line
+//   transition tables, it is useful to order those tables.\line
+//   tmTableIndex takes in a table and generates a unique index for\line
+//   that table.  It is possible to go back and forth between a table\line
+//   and its index.\line
+*/}}\line
+int64_t\line
+{\b {\cf8 tmTableIndex}}({\b {\cf13 const}} TuringMachineT *this)\line
+\{\line
+  {\b {\cf13 int}}       di;       {\i {\cf12 /* "digit" index */}}\line
+  {\b {\cf13 int}}       si;       {\i {\cf12 /* state index */}}\line
+  {\b {\cf13 int}}       ii;       {\i {\cf12 /* input index */}}\line
+  {\b {\cf13 int}}       dv;       {\i {\cf12 /* "digit" value */}}\line
+  int64_t ti  = 0;  {\i {\cf12 /* table index */}}\line
+  int64_t p21 = 1;  {\i {\cf12 /* power of 21 */}}\line
+\line
+  {\b {\cf16 for}}(si=0; si < this->num_states; si++) \{\line
+    {\b {\cf16 for}}(ii=0; ii <= this->charset_max; ii++) \{\line
+      {\i {\cf12 /* Find which digit we're at */}}\line
+      di = si * this->num_states + ii;\line
+\line
+      {\i {\cf12 /* Compute lexical value of this table entry */}}\line
+      {\b {\cf16 if}}(this->table[si][ii].move != STOP) \{\line
+        dv =   this->table[si][ii].write\line
+             + this->table[si][ii].next * (this->charset_max + 1)\line
+             + this->table[si][ii].move * (this->charset_max + 1)\line
+               * this->num_states;\line
+      \} {\b {\cf16 else}} \{\line
+        dv = 20;\line
+      \}\line
+      {\i {\cf12 /* Accumulate the table index */}}\line
+      ti += p21 * dv;\line
+\line
+      {\i {\cf12 /* Compute next power of 21 */}}\line
+      p21 *= 21;\line
+    \}\line
+  \}\line
+  {\b {\cf16 return}} ti;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTableWrite: write a Turing machine table in a machine readable form\line
+//\line
+//\line
+// DESCRIPTION\line
+//   tmTableWrite writes a Turing machine table in a way such that it\line
+//   can be read in by tmTableRead.\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 tmTableWrite}}({\b {\cf13 const}} TuringMachineT * {\b {\cf13 const}} this, {\b {\cf13 const}} {\b {\cf13 char}} * {\b {\cf13 const}} filename)\line
+\{\line
+  FILE *stream;\line
+  {\b {\cf13 int}} si;\line
+  {\b {\cf13 int}} ii;\line
+  {\b {\cf13 static}} {\b {\cf13 char}} *move_chars = {\b {\cf18 "LRS"}};\line
+  {\b {\cf13 const}} int64_t ti = tmTableIndex(this);  {\i {\cf12 /* table index */}}\line
+\line
+  {\i {\cf12 /* Open the tape file for writing */}}\line
+  {\b {\cf16 if}}((stream=fopen(filename, {\b {\cf18 "w"}}))==NULL) \{\line
+    fprintf(stderr, {\b {\cf18 "tmTableWrite: error opening '%s'\\n"}}, filename);\line
+    {\b {\cf16 return}} -1;\line
+  \}\line
+\line
+  fprintf(stream, {\b {\cf18 "# %s: table %014lli written from %s version %s\\n"}},\line
+          filename, ti, __FILE__, __DATE__);\line
+\line
+  fprintf(stream, {\b {\cf18 "\\ncharset_max %i\\n"}}, this->charset_max);\line
+\line
+  {\b {\cf16 for}}(si=0; si < this->num_states; si++) \{\line
+    fprintf(stream, {\b {\cf18 "\\nstate %i\\n"}}, si);\line
+    {\b {\cf16 for}}(ii=0; ii <= this->charset_max; ii++) \{\line
+      fprintf(stream, {\b {\cf18 "input %i write %i move %c next %i\\n"}}, ii,\line
+             this->table[si][ii].write,\line
+             move_chars[this->table[si][ii].move],\line
+             this->table[si][ii].next);\line
+    \}\line
+  \}\line
+  fclose(stream);\line
+  {\b {\cf16 return}} 1;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* tmTablePrint: print Turing Machine state transition table */}}\line
+#{\b {\cf9 define}} {\b {\cf8 tmTablePrint}}(this) tmTableCurse(this, -1, -1)\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTableCurse: use curses to print Turing Machine state transition table\line
+//\line
+//\line
+// ARGUMENTS\line
+//   wy (in): row to print table, where row 0 is the top\line
+//     if wy is negative then print without using curses\line
+//\line
+//   wx (in): column to print table, where colunm 0 is the left\line
+//\line
+//\line
+// DESCRIPTION\line
+//   The left-most column of the state transition table indicates the\line
+//   state.  Each row of the state transition table indicates the\line
+//   instructions to perform for that given state.  Each of the columns\line
+//   to the right of the leftmost column are for a given input from the\line
+//   current tape frame.  The entries in the state transition table\line
+//   have 3 symbols.  The left symbol indicates the value to be written\line
+//   onto the current tape frame, the middle symbol indicates the\line
+//   direction that the tape head will move, and the right symbol\line
+//   indicates the next state to enter.  The entry that corresponds to\line
+//   the current state and tape input value is highlighted.\line
+//\line
+//   If the terminal text window is too small to fit the table, a\line
+//   message is printed which indicates the minimum number of lines the\line
+//   window must have in order to display the table.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTablePrint(), tmTapeFrame(), curses library\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 tmTableCurse}}({\b {\cf13 const}} TuringMachineT *this, {\b {\cf13 const}} {\b {\cf13 int}} wy, {\b {\cf13 const}} {\b {\cf13 int}} wx)\line
+\{\line
+  {\b {\cf13 static}} {\b {\cf13 char}} *move_chars = {\b {\cf18 "LRS"}};\line
+\line
+  int64_t   si;\line
+  int64_t   ii;\line
+  {\b {\cf13 int}}    py = wy;\line
+  {\b {\cf13 int}}  (*print)({\b {\cf13 const}} {\b {\cf13 char}} *fmt,...);\line
+\line
+  {\b {\cf16 if}}(wy > 0) \{\line
+    print = printw;\line
+  \} {\b {\cf16 else}} \{\line
+    print = printf;\line
+  \}\line
+\line
+  {\b {\cf16 if}}(wy >= 0) move(py, wx);\line
+  print({\b {\cf18 "+---------"}});\line
+  {\b {\cf16 for}}(ii=0; ii < this->charset_max; ii++) \{\line
+    print({\b {\cf18 "-----------"}});\line
+  \}\line
+  print({\b {\cf18 "---------+\\n"}});\line
+  py++;\line
+\line
+  {\b {\cf16 if}}(wy >= 0) move(py,wx);\line
+  print({\b {\cf18 "| state | "}});\line
+  {\b {\cf16 for}}(ii=0; ii <= this->charset_max; ii++) \{\line
+    print({\b {\cf18 " %5li   | "}}, ii);\line
+  \}\line
+  print({\b {\cf18 "\\n"}});\line
+  py++;\line
+\line
+  {\b {\cf16 if}}(wy >= 0) move(py,wx);\line
+  print({\b {\cf18 "+-------+-"}});\line
+  {\b {\cf16 for}}(ii=0; ii < this->charset_max; ii++) \{\line
+    print({\b {\cf18 "---------+-"}});\line
+  \}\line
+  print({\b {\cf18 "---------|\\n"}});\line
+  py++;\line
+\line
+  {\b {\cf16 for}}(si=0; si < this->num_states; si++) \{\line
+    {\b {\cf16 if}}(wy >= 0) move(py,wx);\line
+    print({\b {\cf18 "| %5li :"}}, si);\line
+\line
+    {\b {\cf16 for}}(ii=0; ii <= this->charset_max; ii++) \{\line
+      {\b {\cf16 if}}((this->state == si) && (tmTapeFrame(this) == ii)) \{\line
+        {\b {\cf16 if}}(wy >= 0) attron(A_STANDOUT);\line
+        print({\b {\cf18 ">"}});\line
+      \} {\b {\cf16 else}} \{\line
+        print({\b {\cf18 " "}});\line
+      \}\line
+\line
+      print({\b {\cf18 "%2li "}}, this->table[si][ii].write);\line
+      print({\b {\cf18 "%2c "}}, move_chars[this->table[si][ii].move]);\line
+      print({\b {\cf18 "%2li"}}, this->table[si][ii].next);\line
+\line
+      {\b {\cf16 if}}((this->state == si) && (tmTapeFrame(this) == ii)) \{\line
+        print({\b {\cf18 "<"}});\line
+        {\b {\cf16 if}}(wy >= 0) attroff(A_STANDOUT);\line
+      \} {\b {\cf16 else}} \{\line
+        print({\b {\cf18 " "}});\line
+      \}\line
+\line
+      print({\b {\cf18 "|"}});\line
+    \}\line
+    print({\b {\cf18 "\\n"}});\line
+    py++;\line
+\line
+    {\b {\cf16 if}}(wy >= 0) move(py,wx);\line
+    print({\b {\cf18 "+-------+-"}});\line
+    {\b {\cf16 for}}(ii=0; ii < this->charset_max; ii++) \{\line
+      print({\b {\cf18 "---------+-"}});\line
+    \}\line
+    print({\b {\cf18 "---------|\\n"}});\line
+    py++;\line
+  \}\line
+\line
+  {\i {\cf12 /* Get size of the curses window */}}\line
+  {\b {\cf16 if}}(wy >= 0) \{\line
+    {\b {\cf13 int}} min_x, min_y;\line
+    {\b {\cf13 int}} max_x, max_y;\line
+    {\b {\cf13 int}} size_y;\line
+\line
+    getbegyx(stdscr, min_y, min_x);\line
+    getmaxyx(stdscr, max_y, max_x);\line
+    size_y = max_y - min_y - py;\line
+    {\b {\cf16 if}}(size_y < 0) \{\line
+      move(wy,wx);\line
+      clrtobot();\line
+      move(wy,wx);\line
+      printw({\b {\cf18 "\\n\\nWindow too short for table.  "}});\line
+      printw({\b {\cf18 "Need at least %i lines for this table.\\n\\n"}}, py);\line
+    \}\line
+  \}\line
+\line
+  {\b {\cf16 if}}(wy >= 0) refresh();\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeAlloc: Allocate more memory for tape, if needed\line
+//\line
+//\line
+// DESCRIPTION\line
+//   The tape of an abstract Turing Machine is infinitely long.  In\line
+//   this simulation, the tape is finite, obviously, but the tape can\line
+//   "grow" dynamically.  Any time a portion of the tape is accessed\line
+//   which was not previously represented (i.e., was not previously\line
+//   allocated), more tape is allocated.  tmTapeAlloc() should be\line
+//   called every time the this->here tape head position is changed.\line
+//\line
+//\line
+// NOTE\line
+//   If the memory allocation fails, tmTapeAlloc() exits the process.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeMove(), tmTapeIndex(), realloc()\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 tmTapeAlloc}}(TuringMachineT *this)\line
+\{\line
+  int64_t ti = tmTapeIndex(this);\line
+\line
+  {\b {\cf16 if}}(this->tape_len <= ti) \{\line
+    int64_t ni;\line
+\line
+    {\b {\cf16 if}}((this->tape = realloc(this->tape, {\b {\cf16 sizeof}}(Char) * (ti+1)))==NULL)\line
+    \{\line
+      fprintf(stderr, {\b {\cf18 "tmTapeAlloc: out of memory\\n"}});\line
+      exit(1);\line
+    \}\line
+\line
+    {\i {\cf12 /* Blank out the new tape elements */}}\line
+    {\b {\cf16 for}}(ni=this->tape_len; ni <= ti; ni++) \{\line
+      {\i {\cf12 /*printf("tmTapeAlloc: blanking tape[%li]\n", ni);*/}}\line
+      this->tape[ni] = 0;\line
+    \}\line
+\line
+    this->tape_len = ti + 1;\line
+  \}\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeMove: move Turing Machine tape head\line
+//\line
+//\line
+// ARGUMENTS\line
+//   this (in/out): Turing Machine\line
+//   move (in): direction to move tape head.\line
+//\line
+//\line
+// DESCRIPTION\line
+//   tmTapeMove() moved the tape head of a Turing Machine either left\line
+//   or right by one frame.  tmTapeMove() should be used as the only\line
+//   way to move a tape head.\line
+//\line
+//   If the tape had not previously been long enough to refer to the\line
+//   index that results from the move, then the tape is reallocated to\line
+//   include the new tape index, and the new tape elements are\line
+//   initialized to blank (0).\line
+//\line
+//\line
+// RETURN VALUE\line
+//   Return -1 if a Stop instruction was reached.\line
+//   Return 0 if a MOVE_LEFT or a MOVE_RIGHT was performed.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeAlloc()\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 tmTapeMove}}(TuringMachineT *this, Move move)\line
+\{\line
+  {\b {\cf16 if}}(move==MOVE_LEFT) \{\line
+    this->here --;\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(move==MOVE_RIGHT) \{\line
+    this->here ++;\line
+  \} {\b {\cf16 else}} \{\line
+    {\b {\cf16 return}} -1;\line
+  \}\line
+  tmTapeAlloc(this);\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeWrite: write a tape for a Turing Machine in machine readable way\line
+//\line
+//\line
+// DESCRIPTION\line
+//   Write the tape of a Turing Machine in a file format suitable\line
+//   for the tape to be read in by tmTapeRead.\line
+//\line
+//\line
+// RETURN VALUE\line
+//   If there was an error, return a non-positive number.\line
+//   If the tape was written without error, return a positive number.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeRead, tmTapeHead, tmTapeFrame\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 tmTapeWrite}}(TuringMachineT *this, {\b {\cf13 const}} {\b {\cf13 char}} *filename)\line
+\{\line
+  {\b {\cf13 const}} int64_t here     = this->here;\line
+\line
+  {\i {\cf12 /* far_head: head position corresponding to the end of the tape */}}\line
+  {\b {\cf13 const}} int64_t far_head = tmTapeHead(this, this->tape_len - 1);\line
+\line
+  int64_t       start_index;\line
+  int64_t       last_index;\line
+  FILE      *stream;\line
+\line
+  {\i {\cf12 /* Open the tape file for writing */}}\line
+  {\b {\cf16 if}}((stream=fopen(filename, {\b {\cf18 "w"}}))==NULL) \{\line
+    fprintf(stderr, {\b {\cf18 "tmTapeWrite: error opening '%s'\\n"}}, filename);\line
+    {\b {\cf16 return}} -1;\line
+  \}\line
+\line
+  {\i {\cf12 /* Print the comment line */}}\line
+  fprintf(stream, {\b {\cf18 "# tmTapeWrite: %lli frames, head at %lli\\n"}},\line
+          this->tape_len, this->here);\line
+\line
+  {\i {\cf12 /* Print the starting index */}}\line
+  {\b {\cf16 if}}(far_head >= 0) \{\line
+    start_index = -far_head;\line
+    last_index = far_head;\line
+  \} {\b {\cf16 else}} \{\line
+    start_index = far_head;\line
+    last_index = -(far_head+1);\line
+  \}\line
+  fprintf(stream, {\b {\cf18 "start %lli\\n"}}, start_index);\line
+\line
+  {\i {\cf12 /* Print the current state */}}\line
+  \{\line
+    {\b {\cf13 const}} int32_t state = this->state;  {\i {\cf12 /* type conversion */}}\line
+    fprintf(stream, {\b {\cf18 "state %li\\n"}}, state);\line
+  \}\line
+\line
+  {\i {\cf12 /* Print the tape frames */}}\line
+  \{\line
+    int64_t frame;\line
+\line
+    {\b {\cf16 for}}(this->here = start_index; this->here <= last_index; this->here ++)\line
+    \{\line
+      frame = tmTapeFrame(this);  {\i {\cf12 /* type conversion */}}\line
+      {\b {\cf16 if}}(this->here == here) \{\line
+        fprintf(stream, {\b {\cf18 "# tape head at %lli\\nhead "}}, this->here);\line
+      \}\line
+      fprintf(stream, {\b {\cf18 "%lli\\n"}}, frame);\line
+    \}\line
+  \}\line
+\line
+  {\i {\cf12 /* put tape head back where it was */}}\line
+  this->here = here;\line
+\line
+  {\i {\cf12 /* Close the output file */}}\line
+  fclose(stream);\line
+\line
+  {\b {\cf16 return}} 1;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeRead: read a tape for a Turing Machine\line
+//\line
+//\line
+// TAPE FILE FORMAT\line
+//   The tape file is a text file which described the initial value of\line
+//   the tape.  The first line of the tape file must be a comment line\line
+//   of the form\line
+//\line
+//     # comment\line
+//\line
+//   The second line of the tape file must be of the form\line
+//\line
+//     start <integer>\line
+//\line
+//   where the integer is the starting index of the rest of the values\line
+//   in the tape file.\line
+//\line
+//   The third and subsequent lines in the tape file are tape frame\line
+//   values or a line of the form\line
+//\line
+//     state <integer>\line
+//\line
+//   A line beginning with the string "state" is used to indicate the\line
+//   starting state of the machine.  If no "state" line is present,\line
+//   then state 0 is assumed to be the starting state.  Usually, the\line
+//   user will not supply a starting state because    the convention\line
+//   with Turing Machines is that their initial state is the first\line
+//   state in the table.  The "state" ine feature is intended to be\line
+//   used only for restarting a Turing Machine simulation from a\line
+//   previous execution.  Only one "state" line may be present.\line
+//\line
+//   The values of the tape frames are interpretted as sequential from\line
+//   left to right, starting at the index given on the second line of\line
+//   the tape file.  Tape values must be one per line.\line
+//\line
+//   If a tape value is preceded by the string "head" then the\line
+//   corresponding tape frame will be the starting location of the tape\line
+//   head when the simulation starts.  If the tape head is not\line
+//   specified in this way (i.e., if there are no tape values preceded\line
+//   by the "head" string) then the initial head location will be at\line
+//   index 0.  If more than one "head" line is present in the tape file,\line
+//   an error occurs.\line
+//\line
+//\line
+// NOTE\line
+//   At least enough memory is allocated for the tape to hold all of\line
+//   the characters read from the tape file.  Any extra memory\line
+//   allocated for the tape is set to blank.\line
+//\line
+//\line
+// RETURN VALUE\line
+//   Return negative value if error occurs.\line
+//   Return positive value if no errors occured.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeMove(), tmTapeAlloc(), tmTapeWrite()\line
+*/}}\line
+int64_t\line
+{\b {\cf8 tmTapeRead}}(TuringMachineT *this, {\b {\cf13 char}} *filename)\line
+\{\line
+  {\b {\cf13 char}}  line[1024];      {\i {\cf12 /* input line buffer, for parsing file */}}\line
+  int64_t  start;           {\i {\cf12 /* index of first frame in tape file */}}\line
+  int32_t  character;       {\i {\cf12 /* input character from tape file */}}\line
+  int32_t  line_num    = 1; {\i {\cf12 /* current file line number.  used for debugging */}}\line
+  FILE *stream;          {\i {\cf12 /* tape file stream */}}\line
+  int64_t  head_start  = 0; {\i {\cf12 /* starting head location.  Default is 0 */}}\line
+  {\b {\cf13 int}}   head_given  = 0; {\i {\cf12 /* flag: was head location present in file? */}}\line
+  int32_t  state;           {\i {\cf12 /* initial state */}}\line
+  {\b {\cf13 int}}   state_given = 0; {\i {\cf12 /* flag: was initial state present in file? */}}\line
+\line
+\line
+\line
+  {\i {\cf12 /* Open the tape file for reading */}}\line
+  {\b {\cf16 if}}((stream=fopen(filename, {\b {\cf18 "r"}}))==NULL) \{\line
+    fprintf(stderr, {\b {\cf18 "tmTapeRead: error opening '%s'\\n"}}, filename);\line
+    {\b {\cf16 return}} -1;\line
+  \}\line
+\line
+  {\i {\cf12 /* Read and ignore the first line -- comment line.\line
+  // Note that the comment line must be present,\line
+  // and must be the first line of the tape file.\line
+  */}}\line
+  fgets(line, 1023, stream);\line
+  line_num++;\line
+  printf({\b {\cf18 "%s: %s\\n"}}, filename, line);\line
+\line
+  {\i {\cf12 /* Read the starting-index */}}\line
+  {\i {\cf12 /* This scanf will take an empty string as a valid integer.\line
+  // Sounds fucked up to me.  In any case, that integer takes the value\line
+  // zero which is acceptable.\line
+  */}}\line
+  {\b {\cf16 if}}((fscanf(stream, {\b {\cf18 "start %lli \\n"}}, &start))!=1) \{\line
+    fprintf(stderr, {\b {\cf18 "tmTapeRead: error reading start index\\n"}});\line
+    fclose(stream);\line
+    {\b {\cf16 return}} -2;  {\i {\cf12 /* return "error" status */}}\line
+  \}\line
+  line_num++;\line
+\line
+  {\i {\cf12 /* Set the tape head position at the left end of where the\line
+  // tape file provides tape data.\line
+  */}}\line
+  this->here = start;\line
+\line
+  {\i {\cf12 /* Allocate some memory for the tape */}}\line
+  tmTapeAlloc(this);  {\i {\cf12 /* call tmTapeAlloc whenever this->here is changed */}}\line
+\line
+  {\i {\cf12 /* Move tape head one frame to the left because the tape head is moved\line
+  // to the right just before setting the frame value.\line
+  // This have to be done after the tmTapeAlloc because we only want to\line
+  // allocate as much space as we need, and no more.  It would not be\line
+  // crucial that we do not allocate more space except that if the tape\line
+  // being read is a tape written from a previous run, and more tape\line
+  // were allocated than necessary, then the tape would gradually grow\line
+  // unnecessarily.\line
+  */}}\line
+  this->here -- ;\line
+\line
+  {\i {\cf12 /* Read the tape characters from the tape file,\line
+  // and store them in the Turing Machine tape array.\line
+  */}}\line
+  {\b {\cf16 while}}(fgets(line, 1024, stream)) \{\line
+    line[strlen(line)-1] = {\b {\cf18 '\\0'}};  {\i {\cf12 /* remove trailing newline */}}\line
+\line
+    {\b {\cf16 if}}(   ((sscanf(line, {\b {\cf18 " %li "}}, &character))==1)\line
+       || ((sscanf(line, {\b {\cf18 "head %li "}}, &character))==1)\line
+      )\line
+    \{\line
+      {\b {\cf16 if}}((character < -1) || (character > this->charset_max)) \{\line
+        {\i {\cf12 // int32_t charset_max = this->charset_max;  /* type conversion */\line
+}}        fprintf(stderr, {\b {\cf18 "tmTapeRead: %li: character %li too big > %i\\n"}},\line
+                line_num, character, this->charset_max);\line
+        {\b {\cf16 return}} -3;\line
+      \}\line
+\line
+      tmTapeMove(this, MOVE_RIGHT);\line
+      tmTapeFrame(this) = character;  {\i {\cf12 /* type conversion */}}\line
+\line
+      {\b {\cf16 if}}(!strncmp(line, {\b {\cf18 "head"}}, 4)) \{\line
+        {\b {\cf16 if}}(head_given) \{\line
+          fprintf(stderr,\line
+                  {\b {\cf18 "tmTapeRead: err: %li: multiple head locations given\\n"}},\line
+                  line_num);\line
+          {\b {\cf16 return}} -4;\line
+        \}\line
+        head_start = this->here;\line
+        head_given = 1;\line
+      \}\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(sscanf(line, {\b {\cf18 "state %li "}}, &state)==1) \{\line
+      {\b {\cf16 if}}(state_given) \{\line
+        fprintf(stderr,\line
+                {\b {\cf18 "tmTapeRead: err: %li: multiple initial states given\\n"}},\line
+                line_num);\line
+          {\b {\cf16 return}} -5;\line
+      \}\line
+      state_given = 1;\line
+      this->state = state;\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}} (line[0] == {\b {\cf18 '#'}}) \{\line
+      {\i {\cf12 /* comment line -- ignore */}}\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}} (line[0] == {\b {\cf18 '\\0'}}) \{\line
+      {\i {\cf12 /* blank line -- ignore */}}\line
+\line
+    \} {\b {\cf16 else}} \{\line
+      fprintf(stderr, {\b {\cf18 "tmTapeRead: %li: error reading character\\n"}}, line_num);\line
+      fprintf(stderr, {\b {\cf18 "tmTapeRead: %li: line='%s'\\n"}}, line_num, line);\line
+      fclose(stream);\line
+      {\b {\cf16 return}} -6;  {\i {\cf12 /* return "error" status */}}\line
+    \}\line
+\line
+    {\i {\cf12 /* Increment line counter for The next pass through this loop body */}}\line
+    line_num ++;\line
+  \}\line
+\line
+  {\i {\cf12 /* Close the tape file */}}\line
+  fclose(stream);\line
+\line
+  {\i {\cf12 /* Move tape head to initial position */}}\line
+  this->here = head_start;\line
+  tmTapeAlloc(this);  {\i {\cf12 /* call tmTapeAlloc whenever this->here is changed */}}\line
+\line
+  {\b {\cf16 return}} line_num;  {\i {\cf12 /* return "okay" status */}}\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeBlank:  erase Turing machine tape and initialize a new one\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 tmTapeBlank}}(TuringMachineT *this)\line
+\{\line
+  tmTapeFree(this);\line
+\line
+  {\i {\cf12 /* Set the tape head position at the left end of where the\line
+  // tape file provides tape data.\line
+  */}}\line
+  this->here = 0;\line
+\line
+  {\i {\cf12 /* Allocate some memory for the tape */}}\line
+  tmTapeAlloc(this);  {\i {\cf12 /* call tmTapeAlloc whenever this->here is changed */}}\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapePrint: print Turing Machine tape\line
+//\line
+//\line
+// DESCRIPTION\line
+//   The tape of a Turing Machine is printed.  The tape frame at which\line
+//   the tape head is sitting is indicated by a head location marker The\line
+//   tape frame where the head started (tape frame 0) is indicated by a\line
+//   frame index marker.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeIndex()\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 tmTapePrint}}(TuringMachineT *this)\line
+\{\line
+  int64_t ti;\line
+  int64_t left_end;\line
+  int64_t right_end;\line
+  int64_t here = this->here;\line
+\line
+  printf({\b {\cf18 "TAPE:\\n"}});\line
+  printf({\b {\cf18 "-----\\n"}});\line
+  {\b {\cf16 if}}(this->tape_len % 2 == 0) \{\line
+    {\i {\cf12 /* last element on tape is odd, i.e. has a negative index */}}\line
+    left_end = - this->tape_len / 2;\line
+    right_end = this->tape_len + left_end - 1;\line
+  \} {\b {\cf16 else}} \{\line
+    {\i {\cf12 /* last element on tape is even, i.e. has a non-negative index */}}\line
+    right_end = this->tape_len / 2;\line
+    left_end = right_end - this->tape_len + 1;\line
+  \}\line
+\line
+#{\b {\cf9 if}} ({\cf10 VERBOSE} >= 2)\line
+  printf({\b {\cf18 "tape spans from %li to %li\\n"}}, left_end, right_end);\line
+  this->here = left_end;\line
+  printf({\b {\cf18 "tape indices are %li"}}, tmTapeIndex(this));\line
+  this->here = right_end;\line
+  printf({\b {\cf18 " to %li\\n"}}, tmTapeIndex(this));\line
+  this->here = here;\line
+#{\b {\cf9 endif}}\line
+\line
+  {\i {\cf12 /* Print tape */}}\line
+  {\b {\cf16 for}}(ti=left_end; (this->here=ti) <= right_end; ti++) \{\line
+    int64_t tape_frame = tmTapeFrame(this);  {\i {\cf12 /* type conversion */}}\line
+\line
+    {\b {\cf16 if}}(ti==0) \{\line
+      printf({\b {\cf18 " [0]>"}});\line
+    \}\line
+    {\b {\cf16 if}}(ti==here) \{\line
+      printf({\b {\cf18 " [head@%lli]>"}}, ti);\line
+    \}\line
+    printf({\b {\cf18 " %1lli"}}, tape_frame);\line
+  \}\line
+  this->here = here;  {\i {\cf12 /* restore tape head location */}}\line
+  printf({\b {\cf18 "\\n"}});\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* tmTapeOneCount: count the number of '1's on a Turing Machine tape\line
+//\line
+// RETURN VALUE\line
+//   Return the number of '1's on the tape.\line
+*/}}\line
+int64_t\line
+{\b {\cf8 tmTapeOneCount}}({\b {\cf13 const}} TuringMachineT *this)\line
+\{\line
+  int64_t ti;\line
+  int64_t count = 0;\line
+\line
+  {\b {\cf16 for}}(ti=0; ti < this->tape_len; ti++) \{\line
+    {\b {\cf16 if}}(this->tape[ti] == 1) \{\line
+      count ++;\line
+    \}\line
+  \}\line
+  {\b {\cf16 return}} count;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTapeCurse: use curses to display Turing Machine tape segment\line
+//\line
+//\line
+// DESCRIPTION\line
+//   Display a segment of a Turing Machine tape.  The length of the\line
+//   segment which is displayed depends on the width of the terminal\line
+//   screen.\line
+//\line
+//   The tape display has three parts, verticlly stacked: the tape\line
+//   indices, the tape values, and the tape head position.\line
+//\line
+//   The tape display shows the tape indices above the tape values.\line
+//   These indices are not actually used by the Turing Machine, but\line
+//   they are useful to a human trying to keep track of what the Turing\line
+//   Machine is doing.  The tape index 0 is the starting point for the\line
+//   tape head.\line
+//\line
+//   The tape values are printed with spaces between the values.\line
+//   Remember that, for a true Turing Machine, the tape is infinitely\line
+//   long.  However, in this simulation, the tape's stored length is\line
+//   finite (although the tape will "grow" indefinitely, as new\line
+//   portions are accessed) .  When the entire stored tape will not fit\line
+//   on the screen, then ellipsis are displayed indicating that there\line
+//   is more of the tape than what is being displayed.  Remember that\line
+//   if ellipsis are not visible, it means that the representation of\line
+//   the tape is not currently being stored.  It does NOT mean that you\line
+//   are looking at the end of the tape.  There is no end of the tape.\line
+//   The tape is infinite.\line
+//\line
+//   The tape values will scroll left and right as the tape head\line
+//   moves.  The tape head will also move, when scrolling the tape is\line
+//   not appropriate.\line
+//\line
+//   Below the tape values portion of the tape display is the tape head\line
+//   location indicator, along with the tape index where the tape head\line
+//   sits.  Again, this index is not used by the abstract Turing\line
+//   Machine, but it is useful for humans.\line
+//\line
+//\line
+// ARGUMENTS\line
+//   wy (in): row to print tape, where row 0 is the top\line
+//   wx (in): column to print tape, where colunm 0 is the left\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapePrint(), curses library\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 tmTapeCurse}}({\b {\cf13 const}} TuringMachineT *this, {\b {\cf13 int}} wy, {\b {\cf13 int}} wx)\line
+\{\line
+  {\b {\cf13 int}}            size_x;\line
+  int64_t           ti;\line
+  int64_t           left_end;\line
+  int64_t           right_end;\line
+  int64_t           tape_print_left;\line
+  int64_t           tape_print_right;\line
+  TuringMachineT shallow_copy      = *this;\line
+\line
+  {\i {\cf12 /* Get size of the curses window */}}\line
+  \{\line
+    {\b {\cf13 int}} min_x, min_y;\line
+    {\b {\cf13 int}} max_x, max_y;\line
+\line
+    getbegyx(stdscr, min_y, min_x);\line
+    getmaxyx(stdscr, max_y, max_x);\line
+    size_x = max_x - min_x - 16 - wx;\line
+  \}\line
+\line
+  {\i {\cf12 /* Find ends of tape */}}\line
+  {\b {\cf16 if}}(this->tape_len % 2 == 0) \{\line
+    {\i {\cf12 /* last element on tape is odd, i.e. has a negative index */}}\line
+    left_end  = - this->tape_len / 2;\line
+    right_end =   this->tape_len + left_end - 1;\line
+  \} {\b {\cf16 else}} \{\line
+    {\i {\cf12 /* last element on tape is even, i.e. has a non-negative index */}}\line
+    right_end =             this->tape_len / 2;\line
+    left_end  = right_end - this->tape_len + 1;\line
+  \}\line
+\line
+  {\i {\cf12 /* Calculate what segment of the tape to display */}}\line
+  tape_print_left  = this->here - size_x / 4;\line
+  tape_print_right = this->here + size_x / 4;\line
+\line
+  {\b {\cf16 if}}(tape_print_left < left_end) \{\line
+    {\i {\cf12 /* Make sure we do not try to refer off end of tape */}}\line
+    tape_print_left  = left_end;\line
+    {\i {\cf12 /* ... but try to print as much of the tape as possible */}}\line
+    tape_print_right = tape_print_left + size_x / 2;\line
+  \}\line
+\line
+  {\b {\cf16 if}}(tape_print_right > right_end) \{\line
+    {\i {\cf12 /* Make sure we do not try to refer off end of tape */}}\line
+    tape_print_right = right_end;\line
+    {\i {\cf12 /* ... but try to print as much of the tape as possible */}}\line
+    tape_print_left  = tape_print_right - size_x / 2;\line
+  \}\line
+\line
+  {\b {\cf16 if}}(tape_print_left < left_end) \{\line
+    {\i {\cf12 /* Make sure we do not try to refer off end of tape */}}\line
+    tape_print_left = left_end;\line
+  \}\line
+\line
+\line
+  {\i {\cf12 /* Print tape index marker value. */}}\line
+  move(wy, wx);\line
+  printw({\b {\cf18 "   "}});\line
+  {\b {\cf16 for}}(ti=tape_print_left; (ti <= tape_print_right) && (ti%10 != 0); ti++) \{\line
+      printw({\b {\cf18 "  "}});\line
+  \}\line
+  {\b {\cf16 for}}(; ti <= tape_print_right; ti+=10) \{\line
+      printw({\b {\cf18 " %-19li"}}, ti);\line
+  \}\line
+  printw({\b {\cf18 "\\n"}});\line
+  wy++;\line
+\line
+  {\i {\cf12 /* Print tape index marker. */}}\line
+  move(wy, wx);\line
+  printw({\b {\cf18 "   "}});\line
+  {\b {\cf16 for}}(ti=tape_print_left; ti <= tape_print_right; ti++) \{\line
+    {\b {\cf16 if}}(ti%10 == 0) \{\line
+      printw({\b {\cf18 " |"}});\line
+    \} {\b {\cf16 else}} \{\line
+      printw({\b {\cf18 "  "}});\line
+    \}\line
+  \}\line
+  printw({\b {\cf18 "\\n"}});\line
+  wy++;\line
+\line
+\line
+  {\i {\cf12 /* Print tape */}}\line
+  move(wy, wx);\line
+  {\b {\cf16 if}}(tape_print_left > left_end) \{\line
+    printw({\b {\cf18 "..."}});\line
+  \} {\b {\cf16 else}} \{\line
+    printw({\b {\cf18 "   "}});\line
+  \}\line
+\line
+  {\b {\cf16 for}}(ti=tape_print_left; ti <= tape_print_right; ti++) \{\line
+    shallow_copy.here = ti;\line
+    printw({\b {\cf18 " %1li"}}, this->tape[tmTapeIndex(&shallow_copy)]);\line
+  \}\line
+\line
+  {\b {\cf16 if}}(tape_print_right < right_end) \{\line
+    printw({\b {\cf18 " ..."}});\line
+  \} {\b {\cf16 else}} \{\line
+    printw({\b {\cf18 "    "}});\line
+  \}\line
+  printw({\b {\cf18 "\\n"}});\line
+  wy++;\line
+\line
+\line
+  {\i {\cf12 /* Print tape head marker, "^" */}}\line
+  move(wy, wx);\line
+  printw({\b {\cf18 "   "}});\line
+  {\b {\cf16 for}}(ti=tape_print_left; ti <= tape_print_right; ti++) \{\line
+    {\b {\cf16 if}}(ti == this->here) \{\line
+      printw({\b {\cf18 " ^"}});\line
+      {\b {\cf16 break}};\line
+    \} {\b {\cf16 else}} \{\line
+      printw({\b {\cf18 "  "}});\line
+    \}\line
+  \}\line
+  printw({\b {\cf18 "\\n"}});\line
+  wy++;\line
+\line
+\line
+  {\i {\cf12 /* Print tape head location value. */}}\line
+  move(wy, wx);\line
+  printw({\b {\cf18 "   "}});\line
+  {\b {\cf16 for}}(ti=tape_print_left; ti <= tape_print_right; ti++) \{\line
+    {\b {\cf16 if}}(ti == this->here) \{\line
+      printw({\b {\cf18 "% li"}}, this->here);\line
+      {\b {\cf16 break}};\line
+    \} {\b {\cf16 else}} \{\line
+      printw({\b {\cf18 "  "}});\line
+    \}\line
+  \}\line
+  printw({\b {\cf18 "\\n"}});\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmUpdate: update the state and tape of a Turing Machine\line
+//\line
+//\line
+// DESCRIPTION\line
+//   A single step in the execution of the simulation of a Turing\line
+//   Machine involves these steps:\line
+//     (1) Read the current tape frame.  This is the "input".\line
+//     (2) Look in the state transition table at the entry for the\line
+//         current state and input tape frame value.  This entry will\line
+//         have 3 fields:\line
+//\line
+//           (a) what to write (output) at the current tape frame\line
+//           (b) which way to move the tape head\line
+//           (c) what state to enter into next.\line
+//\line
+//          Alternatively, the entry could simply be a "stop"\line
+//          instruction.\line
+//\line
+//     (3) If the instruction was "stop" then stop.  Otherwise, write,\line
+//         at the current tape frame, the output\line
+//     (4) Move the tape head.\line
+//     (5) Change the state.\line
+//\line
+//   tmUpdate performs all of these steps.\line
+//\line
+//   Presumably, tmUpdate will be called from within a loop.  That loop\line
+//   should break when tmUpdate reaches a "stop" instruction.\line
+//\line
+//\line
+// NOTE\line
+//   The "stop" instruction may be accompanied by a "write".  It seems\line
+//   that the definition of a Turing Machine varies with respect to this\line
+//   detail.\line
+//\line
+//\line
+// RETURN VALUE\line
+//   Return 1 if a "stop" statement was reached.\line
+//   Return 0 if a "MOVE_LEFT" or "MOVE_RIGHT" was done to the tape\line
+//   head, along with the associated other steps.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeMove(), tmTapeFrame(), tmSimulate()\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 tmUpdate}}(TuringMachineT *this)\line
+\{\line
+  {\i {\cf12 /* Read the tape here */}}\line
+  {\b {\cf13 const}} Char input  = tmTapeFrame(this);\line
+  {\b {\cf13 const}} Move move   = this->table[this->state][input].move;\line
+\line
+  {\i {\cf12 /* Write the value for this input */}}\line
+  tmTapeFrame(this) = this->table[this->state][input].write;\line
+\line
+  {\i {\cf12 /* Move the tape */}}\line
+  tmTapeMove(this, this->table[this->state][input].move);\line
+\line
+  {\i {\cf12 /* Set the machine into the new state */}}\line
+  this->state = this->table[this->state][input].next;\line
+\line
+  {\b {\cf16 if}}(STOP == move) \{\line
+    {\b {\cf16 return}} 1; {\i {\cf12 /* Turing machine reached STOP */}}\line
+  \}\line
+\line
+  {\b {\cf16 return}} 0; {\i {\cf12 /* keep going */}}\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* tmStatePrint: print the current state and tape head position\line
+//\line
+// For debugging.\line
+//\line
+// SEE ALSO\line
+//   tmStateCurse()\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 tmStatePrint}}({\b {\cf13 const}} TuringMachineT *this)\line
+\{\line
+  {\i {\cf12 // int32_t state = this->state;  /* type conversion */\line
+}}  printf({\b {\cf18 "state %i    head %lli\\n"}}, this->state, this->here);\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmSimulate: perform a Turing Machine simulation\line
+//\line
+//\line
+// DESCRIPTION\line
+//   A Turing Machine simulation is performed without any frills.\line
+//\line
+//\line
+// ARGUMENTS\line
+//   max_iters (in): maximum number of iterations (shifts) before quitting\line
+//\line
+//\line
+// RETURN VALUE\line
+//   Returns number of shifts if stop occured withing turing machine.\line
+//   Returns -1 if max_iters was reached.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmUpdate(), tmVisualSimulate()\line
+*/}}\line
+int64_t\line
+{\b {\cf8 tmSimulate}}(TuringMachineT *this, int64_t max_iters, int64_t tape_len_max)\line
+\{\line
+  int64_t       stop      = 0;\line
+  int64_t       iters;\line
+\line
+#{\b {\cf9 ifdef}} {\cf10 BUSY_BEAVER_SEARCH}\line
+  {\i {\cf12 /* The BUSY_BEAVER_SEARCH code slows this loop down by %. */}}\line
+  {\b {\cf13 const}} int64_t iter_test = this->num_states * (this->charset_max + 1);\line
+#{\b {\cf9 endif}}\line
+\line
+  {\b {\cf16 for}}(iters=0;\line
+      !stop && (iters < max_iters) && (this->tape_len < tape_len_max);\line
+      iters++)\line
+  \{\line
+    stop = tmUpdate(this);\line
+#{\b {\cf9 ifdef}} {\cf10 BUSY_BEAVER_SEARCH}\line
+    {\b {\cf16 if}}(iters < iter_test) \{\line
+      {\b {\cf16 if}}(0 == this->state) \{\line
+        {\b {\cf16 if}}(! tmTapeOneCount(this)) \{\line
+          {\b {\cf16 return}} -3;\line
+        \}\line
+      \}\line
+    \}\line
+#{\b {\cf9 endif}}\line
+  \}\line
+\line
+  {\b {\cf16 if}}(stop) \{\line
+    {\b {\cf16 return}} iters;\line
+  \}\line
+\line
+  {\b {\cf16 if}}(this->tape_len >= tape_len_max) \{\line
+    {\b {\cf16 return}} -2;\line
+  \}\line
+\line
+  {\b {\cf16 return}} -1;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   helpPrint: print helpful information about "visual mode" keys\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeCurse(), tmTableCurse(), curses library\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 helpPrint}}({\b {\cf13 void}})\line
+\{\line
+  {\b {\cf13 int}} max_x, max_y;\line
+\line
+  {\i {\cf12 /* Get size of the curses window */}}\line
+  getmaxyx(stdscr, max_y, max_x);\line
+\line
+  {\i {\cf12 /* Clear a portion of the screen */}}\line
+  max_y -= 8;\line
+  move(max_y,1);\line
+  clrtobot();\line
+  printw({\b {\cf18 "\\n"}});\line
+  printw({\b {\cf18 "'Escape' to halt machine\\n"}});\line
+  printw({\b {\cf18 "'d' to toggle debug mode (i.e. single step mode)\\n"}});\line
+  printw({\b {\cf18 "'v' to toggle visual display of execution\\n"}});\line
+  printw({\b {\cf18 "'?' to display this information\\n"}});\line
+  printw({\b {\cf18 "\\n"}});\line
+  printw({\b {\cf18 "Press any key to return to the Turing Machine visual display\\n"}});\line
+  refresh();\line
+\line
+  {\i {\cf12 /* Wait for a key press */}}\line
+  nodelay(stdscr, FALSE);  {\i {\cf12 /* blocking input */}}\line
+  getchar();\line
+\line
+  clear();\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmCursesDisplay: Display the "visual mode" Turing Machine display\line
+//\line
+//\line
+// DESCRIPTION\line
+//   The "visual" mode displays the state transition table, the segment\line
+//   of the tape in the vicinity of the tape head, and some other\line
+//   information.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTapeCurse(), tmTableCurse(), curses library\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 tmCursesDisplay}}({\b {\cf13 const}} TuringMachineT *this, int64_t iters)\line
+\{\line
+  tmTapeCurse(this, 1, 1);\line
+\line
+  move(7,1);\line
+  printw({\b {\cf18 "Shift %-10lli    tape length %li\\n"}}, iters, this->tape_len);\line
+  tmTableCurse(this, 9, 1);\line
+\line
+  refresh();\line
+\line
+  #{\b {\cf16 if}} __CYGWIN__\line
+  {\i {\cf12 // In 'rxvt' under Cygwin, curses refresh does not seem to work\line
+}}  {\i {\cf12 // unless the terminal output buffer gets flushed, with actual output.\line
+}}  {\i {\cf12 // This printf, with newline, makes refresh do what we want (except we get an extra newline).\line
+}}  {\i {\cf12 // printf("\\n");\line
+}}  {\i {\cf12 // Sleeping for the duration of a frame refresh also seems to work.\line
+}}\line
+  usleep(13333);        {\i {\cf12 // Update no faster than display frame rate.\line
+}}                        {\i {\cf12 // 75 Hz <==> 13333 microseconds\line
+}}                        {\i {\cf12 // 60 Hz <==> 16667 microseconds\line
+}}  #endif\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmVisualSimulate: perform Turing Machine simulation with display\line
+//\line
+//\line
+// DESCRIPTION\line
+//   tmVisualSimulate performs a simulation of a Turing Machine, and\line
+//   displays information about the simulation as it runs.  The\line
+//   information displayed includes the state transition table with the\line
+//   current state highlighted, the current tape head position, and a\line
+//   segment of the tape in the vicinity of the tape head.  The display\line
+//   is all textual, and uses the "curses" screen handling package.\line
+//\line
+//\line
+// RETURN VALUE\line
+//   Return the number of iterations (aka shifts) executed.\line
+*/}}\line
+int64_t\line
+{\b {\cf8 tmVisualSimulate}}(TuringMachineT *this, int64_t max_iters, int64_t tape_len_max, {\b {\cf13 int}} debug)\line
+\{\line
+  {\b {\cf13 int}}       input          = 0; {\i {\cf12 /* input character from keyboard */}}\line
+  int64_t iters       = 0; {\i {\cf12 /* number of shifts Turing Machine has executed */}}\line
+  {\b {\cf13 int}}       update_display = 1; {\i {\cf12 /* flag: update display of Turing Machine? */}}\line
+\line
+  {\i {\cf12 /* Set up curses "visual mode" */}}\line
+  initscr();\line
+\line
+  cbreak();\line
+  noecho();  {\i {\cf12 /* Do not display key presses */}}\line
+  nonl();\line
+\line
+  {\b {\cf16 if}}(!debug) \{\line
+    {\i {\cf12 /* Use non-blocking input.\line
+    // "non-blocking" means that a read of the keyboard will not\line
+    // suspend the process until a key is pressed.\line
+    */}}\line
+    nodelay(stdscr, TRUE);\line
+  \}\line
+\line
+  {\i {\cf12 /* Display "visual mode" stuff */}}\line
+  tmCursesDisplay(this, iters);\line
+\line
+  {\i {\cf12 /* Main simulation loop: */}}\line
+  {\i {\cf12 /* Note that 'iters' is initialized to '1' instead of '0'.\line
+  // This is because 'iters' is incremented after the end of the loop\line
+  // body, but before the end of the loop body, we print out the number\line
+  // of iterations that have passed.  Also, the very last iteration of\line
+  // the loop ends with a 'break' statement, which means that the end of\line
+  // the loop body is not executed on the last iteration.  Since 'iters'\line
+  // is initialized to '1', the number of iterations that have passed is\line
+  // correct after the point the 'tmUpdate' call is made.\line
+  */}}\line
+  {\b {\cf16 for}}(iters=1; (iters < max_iters) && (this->tape_len < tape_len_max); iters++)\line
+  \{\line
+\line
+    {\i {\cf12 /* Read a keyboard key press, if there is one */}}\line
+    input = getch();\line
+\line
+    {\b {\cf16 if}}(input == 27 {\i {\cf12 /*Escape*/}}) \{\line
+      {\i {\cf12 /* User pressed "Escape" key to halt machine */}}\line
+      {\b {\cf16 break}};\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(input == {\b {\cf18 'd'}}) \{\line
+      {\i {\cf12 /* Toggle debug mode (i.e., single step mode) */}}\line
+      debug = !debug;\line
+      {\b {\cf16 if}}(debug) \{\line
+        nodelay(stdscr, FALSE);         {\i {\cf12 /* blocking input */}}\line
+      \} {\b {\cf16 else}} \{\line
+        nodelay(stdscr, TRUE);          {\i {\cf12 /* non-blocking input */}}\line
+      \}\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(input == {\b {\cf18 'v'}}) \{\line
+      {\i {\cf12 /* Toggle the visual progess updating */}}\line
+      update_display = !update_display;\line
+\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(input == {\b {\cf18 '?'}}) \{\line
+      {\i {\cf12 /* Print the help screen summary */}}\line
+      helpPrint();\line
+\line
+      {\i {\cf12 /* Restore the visual display */}}\line
+      tmCursesDisplay(this, iters);\line
+\line
+      {\i {\cf12 /* Restore blocking or non-blocking keyboard input */}}\line
+      {\b {\cf16 if}}(debug) \{\line
+        nodelay(stdscr, FALSE);         {\i {\cf12 /* blocking input */}}\line
+      \} {\b {\cf16 else}} \{\line
+        nodelay(stdscr, TRUE);          {\i {\cf12 /* non-blocking input */}}\line
+      \}\line
+    \}\line
+\line
+    {\i {\cf12 /* Step forward the Turing Machine */}}\line
+    {\b {\cf16 if}}(tmUpdate(this)) \{\line
+      {\i {\cf12 /* The Turing Machine stopped, so break the simulation loop */}}\line
+      {\b {\cf16 break}};\line
+    \}\line
+\line
+    {\b {\cf16 if}}(update_display) \{\line
+      {\i {\cf12 /* Display "visual mode" stuff */}}\line
+      tmCursesDisplay(this, iters);\line
+    \}\line
+  \} {\i {\cf12 /* end of simulation loop */}}\line
+\line
+  {\i {\cf12 /* The Turing Machine finished (for one of several reasons) */}}\line
+\line
+  {\i {\cf12 /* Do a final visual update to show the final state */}}\line
+  tmCursesDisplay(this, iters);\line
+\line
+  {\i {\cf12 /* Print some info about how the simulation went */}}\line
+  move(0,0);\line
+  {\b {\cf16 if}}(iters >= max_iters) \{\line
+    printw({\b {\cf18 "MAXIMUM ITERATIONS REACHED -- press a key to finish"}});\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(input == 27) \{\line
+    printw({\b {\cf18 "MACHINE HALTED BY USER after %lli shifts -- press a key to finish"}},\line
+           iters);\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(this->tape_len >= tape_len_max) \{\line
+    printw({\b {\cf18 "TAPE TOO LONG after %lli shifts -- press a key to finish"}},\line
+           iters);\line
+  \} {\b {\cf16 else}} \{\line
+    printw({\b {\cf18 "MACHINE STOPPED after %lli shifts -- press a key to finish"}},\line
+           iters);\line
+  \}\line
+  refresh();\line
+\line
+  {\i {\cf12 /* Wait for a key press so that the display does not disappear\line
+  // without being seen by the user.\line
+  */}}\line
+  nodelay(stdscr, FALSE);  {\i {\cf12 /* blocking input */}}\line
+  input = getch();\line
+\line
+  endwin();\line
+\line
+  {\b {\cf16 return}} iters;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTableNext: find next Turing Machine, in lexical order\line
+//\line
+//\line
+// DESCRIPTION\line
+//   tmTableNext is intended to be used to systematially generate all\line
+//   possible Turing machine state transition tables.  Given a Turing\line
+//   machine, the transition table is updated to the lexically next\line
+//   table.\line
+//\line
+//   Lexical order:\line
+//     Fields are incremented in this order: write, next, move.\line
+//     Values for write start at 0 and end at charset_max.\line
+//     Values for next start at 0 and end at (this->num_states - 1).\line
+//     Values for move, in order, are MOVE_LEFT, MOVE_RIGHT, and STOP.\line
+//\line
+//     There is a further rule for lexical incrementation:  When 'move'\line
+//     is "STOP" then, for the purposes of finding a busy beaver, you\line
+//     might as well choose only 'write' "1" entries, and the 'next'\line
+//     field has no meaning.\line
+//\line
+//\line
+// RETURN VALUES\line
+//   0 if the states were not exhausted.\line
+//   1 if this went past the last state.\line
+//\line
+//\line
+// SEE ALSO\line
+//   tmTableIndex(), tmTableWeed(), tmTableBFS()\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 tmTableNext}}(TuringMachineT *this)\line
+\{\line
+  {\b {\cf13 int}} si;  {\i {\cf12 /* state index */}}\line
+  {\b {\cf13 int}} ii;  {\i {\cf12 /* input index */}}\line
+\line
+  {\b {\cf16 for}}(si = 0; si < this->num_states; si++) \{\line
+    {\b {\cf16 for}}(ii = 0; ii <= this->charset_max; ii++) \{\line
+      {\b {\cf16 if}}(this->table[si][ii].write == this->charset_max) \{\line
+        {\i {\cf12 /* wrap this field and advance to next field */}}\line
+        this->table[si][ii].write = 0;\line
+\line
+        {\b {\cf16 if}}(this->table[si][ii].next == (this->num_states - 1)) \{\line
+          {\i {\cf12 /* wrap this field and advance the next field */}}\line
+          this->table[si][ii].next = 0;\line
+\line
+          {\b {\cf16 if}}(this->table[si][ii].move == STOP) \{\line
+            {\i {\cf12 /* wrap entire entry and loop */}}\line
+            this->table[si][ii].write = 0;\line
+            this->table[si][ii].next = 0;\line
+            this->table[si][ii].move = MOVE_LEFT;\line
+          \} {\b {\cf16 else}} \{\line
+            {\i {\cf12 /* increment and return */}}\line
+            this->table[si][ii].move ++;\line
+            {\b {\cf16 if}}(this->table[si][ii].move == STOP) \{\line
+              this->table[si][ii].write = 1;\line
+              this->table[si][ii].next = (this->num_states - 1);\line
+            \}\line
+            {\b {\cf16 return}} 0;\line
+          \}\line
+        \} {\b {\cf16 else}} \{\line
+          {\i {\cf12 /* increment and return */}}\line
+          this->table[si][ii].next ++;\line
+          {\b {\cf16 return}} 0;\line
+        \}\line
+      \} {\b {\cf16 else}} \{\line
+        {\i {\cf12 /* increment and return */}}\line
+        this->table[si][ii].write ++;\line
+        {\b {\cf16 return}} 0;\line
+      \}\line
+    \}\line
+  \}\line
+  {\b {\cf16 return}} 1;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /*\line
+// RETURN VALUES\line
+//   Return 0 if this table does not contain a STOP.\line
+//   Return nonzero if this table contains a STOP.\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 tmTableContainsStop}}(TuringMachineT *this)\line
+\{\line
+  {\b {\cf13 int}} si;            {\i {\cf12 /* state index */}}\line
+  {\b {\cf13 int}} ii;            {\i {\cf12 /* input index */}}\line
+\line
+  {\b {\cf16 for}}(si = 0; si < this->num_states; si++) \{\line
+    {\b {\cf16 for}}(ii = 0; ii <= this->charset_max; ii++) \{\line
+      {\b {\cf16 if}}(STOP == this->table[si][ii].move) \{\line
+        {\b {\cf16 return}} 1;\line
+      \}\line
+    \}\line
+  \}\line
+\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTableBFS: breadth first search of Turing Machine table\line
+//\line
+//\line
+// DESCRIPTION\line
+//   tmTableBFS does a fairly ignorant descent through a Turing Machine\line
+//   table to see whether possibly reachable entries satisfy some\line
+//   criterion, which is determined by 'test'.\line
+//\line
+//   Algorithm:\line
+//     Push state 0 into FIFO.\line
+//     Loop until (state counter exceeds number of states), or (FIFO is empty):\line
+//       Pop the FIFO to get a state.\line
+//       For each entry of this state:\line
+//         If entry satisfies test, then return 1.\line
+//         Push next state of this entry into FIFO.\line
+//       Increment state conter.\line
+//\line
+//\line
+// RETURN VALUES\line
+//   Return result of 'test' if test() ever gives nonzero result.\line
+//   Return zero otherwise.\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 tmTableBFS}}(TuringMachineT *this, {\b {\cf13 int}} test({\b {\cf13 const}} Entry * {\b {\cf13 const}}))\line
+\{\line
+  {\b {\cf13 int}} count = 0;             {\i {\cf12 /* iteration counter */}}\line
+  {\b {\cf13 int}} *state_pushed = NULL;  {\i {\cf12 /* array of Booleans */}}\line
+  {\b {\cf13 int}} state;                 {\i {\cf12 /* index of state being considered */}}\line
+  {\b {\cf13 int}} test_value;            {\i {\cf12 /* value returned by test */}}\line
+  {\b {\cf13 int}} ii;                    {\i {\cf12 /* table input character index */}}\line
+  {\b {\cf13 static}} FifoT *fifo = NULL; {\i {\cf12 /* used for breadth first search */}}\line
+\line
+  {\b {\cf16 if}}(fifo == NULL) \{\line
+    {\i {\cf12 /* We will be using a FIFO of the same size each time so there's\line
+    // no reason to allocate it each time.  Just use one FIFO and recycle\line
+    // it.\line
+    */}}\line
+    fifo = fifoNew(this->num_states * (this->charset_max + 1));\line
+  \}\line
+\line
+  {\i {\cf12 /* Allocate the Boolean array in stack space (automatic) */}}\line
+  {\b {\cf16 if}}((state_pushed = alloca({\b {\cf16 sizeof}}({\b {\cf13 int}}) * (this->num_states + 1))) == NULL)\line
+  \{\line
+    fprintf(stderr, {\b {\cf18 "tmTableBFS: out of memory\\n"}});\line
+    fifoDestroy(fifo);\line
+    abort();\line
+    {\b {\cf16 return}} -1;\line
+  \}\line
+\line
+  {\i {\cf12 /* Reset Booleans to false: no states pushed yet */}}\line
+  \{\line
+    {\b {\cf13 int}} si;\line
+    {\b {\cf16 for}}(si=0; si <= this->num_states; si++) \{\line
+      state_pushed[si] = 0;\line
+    \}\line
+  \}\line
+\line
+  {\i {\cf12 /* Push state 0 into fifo */}}\line
+  fifoAdd(fifo, ({\b {\cf13 void}}*)1);\line
+  state_pushed[0] = 1;\line
+  count = 1;\line
+\line
+  {\b {\cf16 while}}( (count <= this->num_states) && ((state=({\b {\cf13 int}})fifoPop(fifo))!=0) )\line
+  \{\line
+    {\i {\cf12 /* For the FIFO, states are indexed starting at 1, so adjust */}}\line
+    state--;\line
+\line
+    {\b {\cf16 for}}(ii=0; ii <= this->charset_max; ii++) \{\line
+      {\b {\cf16 if}}(test != NULL) \{\line
+        {\b {\cf16 if}}((test_value=test(&this->table[state][ii]))) \{\line
+          fifoReset(fifo);\line
+          {\b {\cf16 return}} test_value;\line
+        \}\line
+      \}\line
+\line
+      {\i {\cf12 /* If 'next' state has not been in the FIFO, push it in */}}\line
+      {\b {\cf16 if}}(!state_pushed[this->table[state][ii].next]) \{\line
+        {\i {\cf12 /* Push next state of this entry into fifo.\line
+        // (For the FIFO, states are indexed starting at 1, so adjust)\line
+        */}}\line
+        fifoAdd(fifo, ({\b {\cf13 void}}*)(this->table[state][ii].next + 1));\line
+        state_pushed[this->table[state][ii].next] = 1;\line
+\line
+        count ++;\line
+      \}\line
+    \}\line
+  \}\line
+\line
+  {\i {\cf12 /* Table feature was not reachable */}}\line
+  fifoReset(fifo);\line
+  {\b {\cf16 if}}(test != NULL) \{\line
+    {\b {\cf16 return}} 0;\line
+  \} {\b {\cf16 else}} \{\line
+    {\b {\cf16 return}} count;\line
+  \}\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* found* functions: test functions for tmTableBFS\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 foundStop}}({\b {\cf13 const}} Entry * {\b {\cf13 const}} this)\line
+\{\line
+  {\b {\cf16 if}}(this->move == STOP) {\b {\cf16 return}} 1;\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+\line
+\line
+{\b {\cf13 int}}\line
+{\b {\cf8 foundOne}}({\b {\cf13 const}} Entry * {\b {\cf13 const}} this)\line
+\{\line
+  {\b {\cf16 if}}(this->write == 1) {\b {\cf16 return}} 1;\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+\line
+\line
+{\b {\cf13 int}}\line
+{\b {\cf8 foundLeft}}({\b {\cf13 const}} Entry * {\b {\cf13 const}} this)\line
+\{\line
+  {\b {\cf16 if}}(this->move == MOVE_LEFT) {\b {\cf16 return}} 1;\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+\line
+\line
+{\b {\cf13 int}}\line
+{\b {\cf8 foundRight}}({\b {\cf13 const}} Entry * {\b {\cf13 const}} this)\line
+\{\line
+  {\b {\cf16 if}}(this->move == MOVE_RIGHT) {\b {\cf16 return}} 1;\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmTableWeed: weed out useless (for busy beaver) Turing Machine tables\line
+//\line
+//\line
+// RETURN VALUES\line
+//   Return 0 if this table is not rejected;\line
+//   Return nonzero if this table is rejected.\line
+*/}}\line
+{\b {\cf13 int}}\line
+{\b {\cf8 tmTableWeed}}(TuringMachineT *this)\line
+\{\line
+  {\b {\cf16 if}}(0 == this->table[0][0].next) \{\line
+    {\b {\cf16 return}} 1;\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(STOP == this->table[0][0].move) \{\line
+    {\b {\cf16 return}} 2;\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(!tmTableContainsStop(this)) \{\line
+    {\i {\cf12 /* No stops present in the table: never stops */}}\line
+    {\b {\cf16 return}} 3;\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(!tmTableBFS(this, foundStop)) \{\line
+    {\i {\cf12 /* Stop not reachable: never stops */}}\line
+    {\b {\cf16 return}} 4;\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(tmTableBFS(this, NULL) < this->num_states) \{\line
+    {\i {\cf12 /* Machine does not refer to all states */}}\line
+    {\b {\cf16 return}} 5;\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(!tmTableBFS(this, foundOne)) \{\line
+    {\i {\cf12 /* No ones reachable: this machine can not be a useful busy beaver */}}\line
+    {\b {\cf16 return}} 6;\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(tmTableBFS(this, foundLeft) && !tmTableBFS(this, foundRight)) \{\line
+    {\i {\cf12 /* Machine moves only to the left */}}\line
+    {\b {\cf16 return}} 7;\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(tmTableBFS(this, foundRight) && !tmTableBFS(this, foundLeft)) \{\line
+    {\i {\cf12 /* Machine moves only to the right */}}\line
+    {\b {\cf16 return}} 8;\line
+  \}\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* turing_machine: global reference to current Turing machine\line
+//   intended for use in interrupt handler\line
+*/}}\line
+{\b {\cf13 static}} TuringMachineT *turing_machine;\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   handle_int: signal handler for busy beaver search\line
+//\line
+//\line
+// DESCRIPTION\line
+//   Searching for busy beavers takes a long time.  In order to be able\line
+//   to continue the search where it left off, it is useful to trap\line
+//   signals which would interrupt the process.  handle_int catches\line
+//   some signals and outputs enough information to continue the search\line
+//   for busy beavers where the search left off.\line
+*/}}\line
+{\b {\cf13 void}}\line
+{\b {\cf8 handle_int}}({\b {\cf13 int}} signum)\line
+\{\line
+  printf({\b {\cf18 "\\n"}});\line
+  tmTablePrint(turing_machine);\line
+  tmTableWrite(turing_machine, {\b {\cf18 "interrupt.tm"}});\line
+  exit(1);\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* PERIOD: how often to output a Turing machine table, for restart purposes\line
+*/}}\line
+#{\b {\cf9 define}} {\cf10 PERIOD} (21*21*21*21+1)\line
+\line
+\line
+{\i {\cf12 /* PATIENCE: print some output so the user knows hw the search is going\line
+//\line
+// Also occasionally output a table so that the search can be restarted\line
+// without losing a lot of effort, in case of a catastrophe, like a\line
+// system crash.\line
+*/}}\line
+#{\b {\cf9 define}} {\cf10 PATIENCE} \\line
+\{ \\line
+  {\b {\cf16 if}}(weed>5) printf({\b {\cf18 "%i"}},weed); \\line
+  fflush(stdout); \\line
+  {\b {\cf16 if}}(table_count % PERIOD == 0) \{ \\line
+    tmTableWrite(this, {\b {\cf18 "periodic.tm"}}); \\line
+    printf({\b {\cf18 "\\ntable %014lli, %lli simulated\\n"}}, table_count, table_sim_count); \\line
+    tmTablePrint(this); \\line
+  \} \\line
+\}\line
+\line
+\line
+\line
+\line
+{\i {\cf12 /* NAME\line
+//   tmBusyBeaverSearch: Search for a busy beaver Turing machine\line
+//\line
+// ARGUMENTS\line
+//   this (in/out): Turing machine\line
+//\line
+//   max_iters (in): maximum number of iterations for each machine\line
+//\line
+//   tape_len_max (in): maximum tape length for each machine\line
+//\line
+//   visual (in): whether to simulate machine in visual mode\line
+//\line
+//   debug (in): whether to start machine simulation in debug mode\line
+//\line
+//\line
+// DESCRIPTION\line
+//   A "busy beaver" is a Turing machine that prints out a lot of\line
+//   '1's.  There is a sort of unofficial contest to find the most\line
+//   prolific 5-state, 2-character busy beaver.  Actually, the contest\line
+//   is somewhat official:  Scientific American had an article in\line
+//   Computer Recreations in the mid 1980's that posed this problem as\line
+//   a contest.  Several solutions are known, but so far nobody has\line
+//   demonstrated that a particular solution is the best one.\line
+//   tmBusyBeaverSearch searches for busy beavers, and is not limited\line
+//   to 5-state, 2-input Turing machines.  Any Turing machine\line
+//   configuration is possible, although smaller busy beavers are not\line
+//   interesting and larger ones have an impractically large\line
+//   configuration space.  In fact, the configuration space for the\line
+//   5-state, 2-character busy beaver is 21^10 = 16,679,880,978,201 (16\line
+//   trillion).\line
+//\line
+//   The famous "halting problem" for Turing machines and their\line
+//   equivalent asks whether it is possible to determine whether a\line
+//   given machine will ever stop on a given tape.  It is known that\line
+//   this problem has no solution.  Therefore, it is not a trivial task\line
+//   to search for busy beavers since it is not known in advance\line
+//   whether a particular machine will ever stop.  Therefore, finite\line
+//   limits must be set to make the search practical.  The limits are\line
+//   the maximum number of iterations 'max_iters' and the maximum\line
+//   length of the tape, 'tape_len_max'.  In practice, the number of\line
+//   iterations of a busy beaver is several orders of magnitude larger\line
+//   than its tape length.  For example, the busy beaver which\line
+//   generates 4098 '1's has a tape of length less than 25000, but\line
+//   executes 47,176,870.\line
+//\line
+//   Several simple methods are employed to attempt to determine ahead\line
+//   of time whether a machine will make a good busy beaver.  See\line
+//   tmTableWeed() for a list of these methods.  More sophisticated\line
+//   methods are certainly possible (such as symmetry under state-row\line
+//   swapping or simple loop checking), and could considerably reduce the\line
+//   effective search space.\line
+*/}}\line
+int64_t\line
+{\b {\cf8 tmBusyBeaverSearch}}(TuringMachineT *this, int64_t max_iters,\line
+                   int64_t tape_len_max, {\b {\cf13 int}} visual, {\b {\cf13 int}} debug)\line
+\{\line
+  {\b {\cf13 int}} weed;\line
+  int64_t table_count = -1;\line
+  int64_t table_sim_count = 0;\line
+  int64_t iters;\line
+  int64_t ones_max = 0;\line
+\line
+  turing_machine = this;\line
+\line
+  signal(SIGINT, handle_int);\line
+  signal(SIGHUP, handle_int);\line
+\line
+  {\b {\cf16 if}}(table_count < 0) \{\line
+    table_count = tmTableIndex(this);\line
+  \}\line
+\line
+  {\b {\cf16 do}} \{\line
+    {\b {\cf16 while}}((weed=tmTableWeed(this))) \{\line
+      tmTableNext(this);\line
+      PATIENCE;\line
+      table_count ++;\line
+    \}\line
+\line
+    table_sim_count ++;\line
+    {\b {\cf16 if}}(debug) \{\line
+      iters = tmVisualSimulate(this, max_iters, tape_len_max, debug);\line
+    \} {\b {\cf16 else}} \{\line
+      iters = tmSimulate(this, max_iters, tape_len_max);\line
+    \}\line
+\line
+    {\i {\cf12 /* Print some information about the how the simulation went */}}\line
+    {\b {\cf16 if}}(iters >= 0) \{\line
+      int64_t count = tmTapeOneCount(this);\line
+\line
+      {\b {\cf16 if}}(count >= (ones_max-1)) \{\line
+        {\b {\cf13 char}} filename[128];\line
+\line
+        printf({\b {\cf18 "\\ntable %014lli ties, with %lli\\n"}}, table_count, ones_max);\line
+\line
+        ones_max = MAX(count, ones_max);\line
+        printf({\b {\cf18 "\\n"}});\line
+        tmTablePrint(this);\line
+\line
+        sprintf(filename, {\b {\cf18 "max%04lli.tm"}}, count);\line
+        tmTableWrite(this, filename);\line
+\line
+        sprintf(filename, {\b {\cf18 "max%04lli.tape"}}, count);\line
+        tmTapeWrite(this, filename);\line
+\line
+        printf({\b {\cf18 "table %014lli\\n"}}, table_count);\line
+        printf({\b {\cf18 "The machine executed %lli shifts\\n"}}, iters);\line
+        printf({\b {\cf18 "tape had %lli 1's\\n"}}, count);\line
+        printf({\b {\cf18 "tape was %lli frames long\\n"}}, this->tape_len);\line
+      \}\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(-1 == iters) \{\line
+      printf({\b {\cf18 "i"}});\line
+      fflush(stdout);\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(-2 == iters) \{\line
+      printf({\b {\cf18 "t"}});\line
+      fflush(stdout);\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(-3 == iters) \{\line
+      printf({\b {\cf18 "L"}});\line
+      fflush(stdout);\line
+    \}\line
+\line
+    {\i {\cf12 /* Reset the Turing machine */}}\line
+    this->state = 0;\line
+    tmTapeBlank(this);\line
+\line
+    PATIENCE;\line
+\line
+    table_count ++;\line
+  \} {\b {\cf16 while}}(!tmTableNext(this)) ;\line
+\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+\line
+\line
+\line
+\line
+{\b {\cf13 int}}\line
+{\b {\cf8 main}}({\b {\cf13 int}} argc, {\b {\cf13 char}} **argv)\line
+\{\line
+  {\b {\cf13 int}} debug             = 0; {\i {\cf12 /* flag: debug mode (i.e. single step mode) */}}\line
+  {\b {\cf13 int}} visual            = 0; {\i {\cf12 /* flag: visual mode. */}}\line
+  {\b {\cf13 int}} verbose           = 0; {\i {\cf12 /* flag: verbose mode */}}\line
+  {\b {\cf13 int}} search            = 0; {\i {\cf12 /* flag: search mode */}}\line
+\line
+  int64_t iters = 0;   {\i {\cf12 /* number of shifts the Turing Machine has executed */}}\line
+\line
+  {\i {\cf12 // max_iters: maximum number of iterations before the machine is stopped.\line
+}}  {\b {\cf13 const}} int64_t max_iters     = INT64_MAX ;\line
+\line
+  {\b {\cf13 const}} int64_t tape_len_max      = 409750;\line
+\line
+  TuringMachine tm              = tmNew();\line
+\line
+\line
+  {\i {\cf12 /* Command line argument parsing variables.  See getopt() */}}\line
+  {\b {\cf13 int}} oc;\line
+  {\b {\cf13 int}} err_flag                  = 0;\line
+  {\b {\cf13 extern}} {\b {\cf13 char}} *optarg;\line
+  {\b {\cf13 extern}} {\b {\cf13 int}} optind, opterr, optopt;\line
+  {\b {\cf13 char}} *machine_file            = NULL;\line
+  {\b {\cf13 char}} *tape_file               = NULL;\line
+\line
+\line
+  {\i {\cf12 /* Parse command line arguments */}}\line
+  {\b {\cf16 while}} ((oc = getopt(argc, argv, {\b {\cf18 "m:t:dsvV"}})) != -1) \{\line
+    {\b {\cf16 switch}} (oc) \{\line
+      {\b {\cf16 case}} {\b {\cf18 'm'}}:\line
+        machine_file = optarg;\line
+      {\b {\cf16 break}};\line
+\line
+      {\b {\cf16 case}} {\b {\cf18 't'}}:\line
+        tape_file = optarg;\line
+      {\b {\cf16 break}};\line
+\line
+      {\b {\cf16 case}} {\b {\cf18 'd'}}:\line
+        debug = 1;\line
+        visual = 1;\line
+      {\b {\cf16 break}};\line
+\line
+      {\b {\cf16 case}} {\b {\cf18 's'}}:\line
+        search = 1;\line
+      {\b {\cf16 break}};\line
+\line
+      {\b {\cf16 case}} {\b {\cf18 'v'}}:\line
+        visual = 1;\line
+      {\b {\cf16 break}};\line
+\line
+      {\b {\cf16 case}} {\b {\cf18 'V'}}:\line
+        verbose = 1;\line
+      {\b {\cf16 break}};\line
+\line
+      {\b {\cf16 case}} {\b {\cf18 '?'}}:\line
+        err_flag++;\line
+    \}\line
+  \}\line
+\line
+  {\b {\cf16 if}} (err_flag) \{\line
+    fprintf(stderr, {\b {\cf18 "usage: %s -m machine_file -t tape_file [-d] [-v] [-V]\\n"}},\line
+            argv[0]);\line
+    exit(2);\line
+  \}\line
+\line
+  {\b {\cf16 if}}(machine_file == NULL) \{\line
+    fprintf(stderr, {\b {\cf18 "%s: must specify machine_file\\n"}}, argv[0]);\line
+    exit(3);\line
+  \}\line
+\line
+  {\b {\cf16 if}}(tape_file == NULL) \{\line
+    fprintf(stderr, {\b {\cf18 "%s: tape_file not specified.  Assuming blank.\\n"}}, argv[0]);\line
+  \}\line
+\line
+\line
+  {\b {\cf16 if}}(verbose) \{\line
+    {\i {\cf12 /* max_iters is printed partly for information and partly to see\line
+    // whether a number as large as max_iters is properly being stored\line
+    // in the integer variable.\line
+    */}}\line
+    printf({\b {\cf18 "maximum iterations = %lli\\n"}}, max_iters);\line
+  \}\line
+\line
+  {\i {\cf12 /* Read the Turing Machine state transition table */}}\line
+  {\b {\cf16 if}}(tmTableRead(tm, machine_file) < 0) exit(1);\line
+\line
+  {\i {\cf12 /* Read the Turing Machine tape */}}\line
+  {\b {\cf16 if}}(tape_file != NULL) \{\line
+    {\b {\cf16 if}}(tmTapeRead(tm, tape_file) < 0) exit(2);\line
+  \} {\b {\cf16 else}} \{\line
+    tmTapeBlank(tm);\line
+  \}\line
+\line
+  {\b {\cf16 if}}(verbose && !visual) \{\line
+    tmTablePrint(tm);\line
+    tmTapePrint(tm);\line
+    printf({\b {\cf18 "table is lexically %014lli\\n"}}, tmTableIndex(tm));\line
+  \}\line
+\line
+  {\b {\cf16 if}}(search) \{\line
+    iters = tmBusyBeaverSearch(tm, max_iters, tape_len_max, visual, debug);\line
+\line
+  \} {\b {\cf16 else}} {\b {\cf16 if}}(visual) \{\line
+    iters = tmVisualSimulate(tm, max_iters, tape_len_max, debug);\line
+\line
+  \} {\b {\cf16 else}} \{\line
+    {\i {\cf12 /* Execute Turing Machine without "visual mode" display */}}\line
+    iters = tmSimulate(tm, max_iters, tape_len_max);\line
+  \}\line
+\line
+  {\b {\cf16 if}}(verbose) \{\line
+    {\i {\cf12 /* Print some information about the how the simulation went */}}\line
+\line
+    tmTapeWrite(tm, {\b {\cf18 "out.tape"}});\line
+    printf({\b {\cf18 "tape was %lli frames long\\n"}}, tm->tape_len);\line
+\line
+    {\b {\cf16 if}}(iters >= 0) \{\line
+      int64_t count = tmTapeOneCount(tm);\line
+\line
+      tmTapePrint(tm);\line
+      printf({\b {\cf18 "The machine executed %lli shifts\\n"}}, iters);\line
+      printf({\b {\cf18 "tape had %lli 1's\\n"}}, count);\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(-1 == iters) \{\line
+      printf({\b {\cf18 "too many iterations\\n"}});\line
+    \} {\b {\cf16 else}} {\b {\cf16 if}}(-2 == iters) \{\line
+      printf({\b {\cf18 "tape too long\\n"}});\line
+    \}\line
+  \}\line
+\line
+  {\b {\cf16 return}} 0;\line
+\}\line
+}

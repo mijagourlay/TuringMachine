@@ -1,0 +1,84 @@
+Turing Machine simulator
+------------------------
+
+Written and Copyright (C) 1997 by Michael J. Gourlay
+
+email: michael.gourlay@colorado.edu
+
+
+
+
+Distribution
+------------
+
+The home site of tm is foudn through
+
+  "http://ucsub.colorado.edu/~gourlay/"
+
+From this page, surf through the "Software" links to the Computer-Theory
+section.
+
+
+
+
+Compiling
+---------
+
+To build "tm", type "make depend" then "make".
+
+
+
+
+Execution
+---------
+
+Read the "tm.man" file for details on running tm.
+
+
+
+
+Example 1:
+  tm -m stop-r-1.tm -t one.tape -d
+
+This will run a simulation of a Turing Machine which searches its tape
+to the right for a '1' and stops.  If the portion of the tape to the
+right of the initial tape position is blank, then this machine never
+stops.  In this example, "tm" is started in "debug" mode, which means
+that the machine will not do anything until a key is pressed.  The
+machine will step one instruction per key press.  If you press the "d"
+key, the machine toggles in and out of "debug" mode.  If you press the
+"Escape" key, the machine will stop.  Try running this 'stop-r-1'
+machine on different tapes.  One interesting thing to notice about
+the "stop-r-1" Turing Machine is that if you run it on a blank tape,
+the tape will grow until your machine runs out of memory.
+
+
+Example 2:
+  tm -m flip.tm -t bits.tape -d
+
+The machine 'flip.tm' will flip the bits of its tape which have
+positive indices.  The machine never stops.
+
+
+Example 3:
+  tm -m bb-501.tm -t zero.tape -V
+
+The machine 'bb-501' is called a Busy Beaver.  This particular Busy
+Beaver has 5 states.  Its purpose is to write as many 1s on a blank
+tape as possible.  If you ran this machine in visual mode, it would
+run for a very long time.  Notice that the above option has a capital
+V not a lower-case v.  This prints the state transition table, the
+initial tape, the final tape, and some other information about the
+execution.
+
+
+
+Have a look at the other Turing Machine examples.
+
+
+
+Several examples of machine files and tape files which are designed to
+fail are included with this package.  They are for testing the error
+trapping code.  Do not be surprised if you find that some of the files
+produce error messages, especially if their comments indicate that they
+are designed to produce errors.

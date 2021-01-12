@@ -1,0 +1,53 @@
+ABS	tm.c	/^#define ABS(a)  ((a)<0?(-(a)):(a))$/
+Char	tm.h	14
+Entry	tm.h	25
+FifoT	fifo.h	16
+MAX	tm.c	/^#define MAX(a,b) ((a)>(b)?(a):(b))$/
+Move	tm.h	15
+Mtm	tm.c	/^main(int argc, char **argv)$/
+State	tm.h	16
+TuringMachine	tm.h	61
+TuringMachineT	tm.h	58
+char	tm.h	14
+fifoAdd	fifo.c	/^fifoAdd(FifoT *this, void *item)$/
+fifoDestroy	fifo.c	/^fifoDestroy(FifoT *this)$/
+fifoFree	fifo.c	/^fifoFree(FifoT *this)$/
+fifoNew	fifo.c	/^fifoNew(int length)$/
+fifoPop	fifo.c	/^fifoPop(FifoT *this)$/
+fifoPrint	fifo.c	/^fifoPrint(FifoT *this)$/
+fifoReset	fifo.c	/^fifoReset(FifoT *this)$/
+fifoTest	fifo.c	/^fifoTest(void)$/
+foundLeft	tm.c	/^foundLeft(const Entry * const this)$/
+foundOne	tm.c	/^foundOne(const Entry * const this)$/
+foundRight	tm.c	/^foundRight(const Entry * const this)$/
+foundStop	tm.c	/^foundStop(const Entry * const this)$/
+handle_int	tm.c	/^handle_int(int signum)$/
+helpPrint	tm.c	/^helpPrint(void)$/
+tmBusyBeaverSearch	tm.c	/^tmBusyBeaverSearch(TuringMachineT *this, long long/
+tmCursesDisplay	tm.c	/^tmCursesDisplay(const TuringMachineT *this, long l/
+tmNew	tm.c	/^tmNew(void)$/
+tmSimulate	tm.c	/^tmSimulate(TuringMachineT *this, long long max_ite/
+tmStatePrint	tm.c	/^tmStatePrint(const TuringMachineT *this)$/
+tmTableBFS	tm.c	/^tmTableBFS(TuringMachineT *this, int test(const En/
+tmTableContainsStop	tm.c	/^tmTableContainsStop(TuringMachineT *this)$/
+tmTableCurse	tm.c	/^tmTableCurse(const TuringMachineT *this, const int/
+tmTableIndex	tm.c	/^tmTableIndex(const TuringMachineT *this)$/
+tmTableNext	tm.c	/^tmTableNext(TuringMachineT *this)$/
+tmTablePrint	tm.c	/^#define tmTablePrint(this) tmTableCurse(this, -1, /
+tmTableRead	tm.c	/^tmTableRead(TuringMachineT *this, char *filename)$/
+tmTableWeed	tm.c	/^tmTableWeed(TuringMachineT *this)$/
+tmTableWrite	tm.c	/^tmTableWrite(const TuringMachineT * const this, co/
+tmTapeAlloc	tm.c	/^tmTapeAlloc(TuringMachineT *this)$/
+tmTapeBlank	tm.c	/^tmTapeBlank(TuringMachineT *this)$/
+tmTapeCurse	tm.c	/^tmTapeCurse(const TuringMachineT *this, int wy, in/
+tmTapeFrame	tm.c	/^#define tmTapeFrame(this) ((this)->tape[tmTapeInde/
+tmTapeFree	tm.c	/^tmTapeFree(TuringMachineT *this)$/
+tmTapeHead	tm.c	/^tmTapeHead(const TuringMachineT *this, long index)/
+tmTapeIndex	tm.c	/^tmTapeIndex(const TuringMachineT *this)$/
+tmTapeMove	tm.c	/^tmTapeMove(TuringMachineT *this, Move move)$/
+tmTapeOneCount	tm.c	/^tmTapeOneCount(const TuringMachineT *this)$/
+tmTapePrint	tm.c	/^tmTapePrint(TuringMachineT *this)$/
+tmTapeRead	tm.c	/^tmTapeRead(TuringMachineT *this, char *filename)$/
+tmTapeWrite	tm.c	/^tmTapeWrite(TuringMachineT *this, const char *file/
+tmUpdate	tm.c	/^tmUpdate(TuringMachineT *this)$/
+tmVisualSimulate	tm.c	/^tmVisualSimulate(TuringMachineT *this, long long m/

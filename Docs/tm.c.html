@@ -1,0 +1,2202 @@
+<!DOCTYPE html PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<HTML>
+<HEAD>
+<TITLE>Enscript Output</TITLE>
+</HEAD>
+<BODY BGCOLOR="#FFFFFF" TEXT="#000000" LINK="#1F00FF" ALINK="#FF0000" VLINK="#9900DD">
+<A NAME="top">
+<A NAME="file1">
+<H1>tm.c</H1>
+
+<PRE>
+<I><FONT COLOR="#B22222">/* tm.c: Turing Machine simulator
+//
+// Written and Copyright (C) 1997 by Michael J. Gourlay
+//
+// Provided as is.  No warrentees, express or implied.
+*/</FONT></I>
+
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;stdio.h&gt;</FONT></B>
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;stdlib.h&gt;</FONT></B>
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;string.h&gt;</FONT></B>
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;unistd.h&gt;</FONT></B>
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;signal.h&gt;</FONT></B>
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;alloca.h&gt;</FONT></B>
+
+#<B><FONT COLOR="#5F9EA0">ifndef</FONT></B> <FONT COLOR="#B8860B">sun</FONT>
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;getopt.h&gt;</FONT></B>
+#<B><FONT COLOR="#5F9EA0">endif</FONT></B>
+
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;curses.h&gt;</FONT></B>
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;limits.h&gt;</FONT></B>
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&lt;signal.h&gt;</FONT></B>
+
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&quot;fifo.h&quot;</FONT></B>
+
+#<B><FONT COLOR="#5F9EA0">include</FONT></B> <B><FONT COLOR="#BC8F8F">&quot;tm.h&quot;</FONT></B>
+
+
+
+
+<I><FONT COLOR="#B22222">/* MAX: return larger of the two input numbers */</FONT></I>
+#<B><FONT COLOR="#5F9EA0">define</FONT></B> <B><FONT COLOR="#0000FF">MAX</FONT></B>(a,b) (((a)&gt;(b))?(a):(b))
+
+#<B><FONT COLOR="#5F9EA0">define</FONT></B> <B><FONT COLOR="#0000FF">ABS</FONT></B>(a)   (((a)&lt;0)?(-(a)):(a))
+
+
+
+
+<I><FONT COLOR="#B22222">/* tmNew: allocate and initialize a new Turing Machine
+//
+// DESCRIPTION
+//   Allocates a new Turing Machine object.  tmNew should always be
+//   used by the client to instantiate a new Turing Machine object.
+//   The client should not allocate space for a Turing Machine without
+//   using tmNew, since the other Turing Machine methods depend on the
+//   initializations done in tmNew.
+//
+// RETURN VALUE
+//   Return the address of the new Turing Machine object.
+//   Returns NULL if memory could not be allocated.
+*/</FONT></I>
+TuringMachineT *
+<B><FONT COLOR="#0000FF">tmNew</FONT></B>(<B><FONT COLOR="#228B22">void</FONT></B>)
+{
+  TuringMachineT *tm;
+  <B><FONT COLOR="#A020F0">if</FONT></B>((tm = (TuringMachineT*) calloc(1, <B><FONT COLOR="#A020F0">sizeof</FONT></B>(TuringMachineT)))==NULL)
+  {
+    <B><FONT COLOR="#A020F0">return</FONT></B> NULL;
+  }
+
+  tm-&gt;charset_max = -1;
+  tm-&gt;state       = 0;
+  tm-&gt;table       = NULL;
+  tm-&gt;num_states  = 0;
+  tm-&gt;here        = 0;
+  tm-&gt;tape_len    = 0;
+  tm-&gt;tape        = NULL;
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> tm;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeFree: free memory of a Turing Machine tape
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">tmTapeFree</FONT></B>(TuringMachineT *this)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;tape != NULL) {
+    free(this-&gt;tape);
+    this-&gt;tape = NULL;
+  }
+  this-&gt;tape_len = 0;
+  this-&gt;here     = 0;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTableRead: read a Turing Machine state transition table from a file
+//
+//
+// Table file format: Each line can either be one of the following:
+//   charset_max &lt;integer&gt;
+//     indicates the charset_max for this TM.
+//     'charset_max' must occur before any 'state' lines.
+//   state
+//     indicates that table entries for a new state are to be read.
+//     'state' must occur before any 'input' lines.
+//   input &lt;integer&gt; write &lt;integer&gt; move &lt;L|R|S&gt; next &lt;integer&gt;
+//     indicates table entry for the current (state,input) tuple.
+//   #
+//     comment line
+//   blank line
+//
+// Any table that has a &quot;next state&quot; entry which refers to a non-existent
+// state is not a valid table.
+//
+//
+// RETURN VALUE
+//   Returns a negative value if there is an error.
+//   Returns a positive value if the table was read without error.
+*/</FONT></I>
+int64_t
+<B><FONT COLOR="#0000FF">tmTableRead</FONT></B>(TuringMachineT *this, <B><FONT COLOR="#228B22">char</FONT></B> *filename)
+{
+  int32_t charset_max   = -1;
+  int32_t state         = -1; <I><FONT COLOR="#B22222">/* current state being read */</FONT></I>
+  int32_t si;                 <I><FONT COLOR="#B22222">/* state index for loop */</FONT></I>
+  int32_t input;              <I><FONT COLOR="#B22222">/* input character for this table entry */</FONT></I>
+  int32_t write;              <I><FONT COLOR="#B22222">/* character to write for this (state, input) */</FONT></I>
+  int32_t next;               <I><FONT COLOR="#B22222">/* next state for this (state, input) */</FONT></I>
+  <B><FONT COLOR="#228B22">char</FONT></B> move;               <I><FONT COLOR="#B22222">/* direction to move head for this (state, input) */</FONT></I>
+  int32_t line_num       = 0; <I><FONT COLOR="#B22222">/* input line number, for debugging */</FONT></I>
+  <B><FONT COLOR="#228B22">char</FONT></B> line[1024];         <I><FONT COLOR="#B22222">/* file line buffer */</FONT></I>
+  FILE *stream;            <I><FONT COLOR="#B22222">/* file stream */</FONT></I>
+  int32_t max_refd_state = 0; <I><FONT COLOR="#B22222">/* number of the highest refered to state */</FONT></I>
+  Entry *table     = NULL; <I><FONT COLOR="#B22222">/* table memory place */</FONT></I>
+  Entry **tablePP  = NULL; <I><FONT COLOR="#B22222">/* table array of pointers */</FONT></I>
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>((stream=fopen(filename, <B><FONT COLOR="#BC8F8F">&quot;r&quot;</FONT></B>))==NULL) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: error opening '%s'\n&quot;</FONT></B>, filename);
+    <B><FONT COLOR="#A020F0">return</FONT></B> -1;
+  }
+
+  <B><FONT COLOR="#A020F0">while</FONT></B>(fgets(line, 1023, stream)) {
+    line[strlen(line)-1] = <B><FONT COLOR="#BC8F8F">'\0'</FONT></B>; <I><FONT COLOR="#B22222">/* remove trailing newline */</FONT></I>
+
+    line_num++;
+
+    <B><FONT COLOR="#A020F0">if</FONT></B>(sscanf(line, <B><FONT COLOR="#BC8F8F">&quot;charset_max %li&quot;</FONT></B>, &amp;charset_max)==1) {
+      <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;charset_max &gt;= 0) {
+        fprintf(stderr,
+                <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: %li: encountered more than one 'charset_max'\n&quot;</FONT></B>,
+                line_num);
+        fprintf(stderr,
+                <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: previous value charset_max=%li\n&quot;</FONT></B>,
+                charset_max);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -2;
+      } <B><FONT COLOR="#A020F0">else</FONT></B> {
+        this-&gt;charset_max = charset_max;  <I><FONT COLOR="#B22222">/* type conversion */</FONT></I>
+      }
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(!strncmp(line, <B><FONT COLOR="#BC8F8F">&quot;state&quot;</FONT></B>, 5)) {
+      <B><FONT COLOR="#A020F0">if</FONT></B>(charset_max &lt; 0) {
+        fprintf(stderr,
+                <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: %li: must have 'charset_max' before 'state'\n&quot;</FONT></B>,
+                line_num);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -3;
+      }
+
+      state ++;
+      this-&gt;num_states = state + 1;
+
+      <I><FONT COLOR="#B22222">/* Allocate a new state line for the TM */</FONT></I>
+      <B><FONT COLOR="#A020F0">if</FONT></B>((table = realloc(table,
+                          <B><FONT COLOR="#A020F0">sizeof</FONT></B>(Entry) * (charset_max + 1) * this-&gt;num_states)
+         )==NULL)
+      {
+        fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: out of memory\n&quot;</FONT></B>);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -4;
+      }
+      <B><FONT COLOR="#A020F0">if</FONT></B>((tablePP = realloc(tablePP, <B><FONT COLOR="#A020F0">sizeof</FONT></B>(Entry*) * this-&gt;num_states))==NULL)
+      {
+        fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: out of memory\n&quot;</FONT></B>);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -4;
+      }
+
+      <B><FONT COLOR="#A020F0">for</FONT></B>(si=0; si &lt; this-&gt;num_states; si++) {
+        tablePP[si] = &amp;table[si * (charset_max+1)];
+      }
+
+      this-&gt;table = tablePP;
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(sscanf(line, <B><FONT COLOR="#BC8F8F">&quot;input %li write %li move %c next %li&quot;</FONT></B>,
+              &amp;input, &amp;write, &amp;move, &amp;next) == 4)
+    {
+      <B><FONT COLOR="#A020F0">if</FONT></B>(state &lt; 0) {
+        fprintf(stderr,
+                <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: %li: must have 'state' before 'input'\n&quot;</FONT></B>,
+                line_num);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -5;
+      }
+
+      <B><FONT COLOR="#A020F0">if</FONT></B>((input &lt; 0) || (input &gt; charset_max)) {
+        fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: %li: bad value for input: %li\n&quot;</FONT></B>,
+                line_num, input);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -6;
+      }
+
+      <I><FONT COLOR="#B22222">/* Store table entry */</FONT></I>
+      <B><FONT COLOR="#A020F0">if</FONT></B>((write &lt; 0) || (write &gt; charset_max)) {
+        fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: %li: bad value for write: %li\n&quot;</FONT></B>,
+                line_num, write);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -7;
+      }
+      this-&gt;table[state][input].write = write;  <I><FONT COLOR="#B22222">/* type conversion */</FONT></I>
+
+      <B><FONT COLOR="#A020F0">if</FONT></B>(next &lt; 0) {
+        fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: %li: bad value for next: %li\n&quot;</FONT></B>,
+                line_num, next);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -8;
+      }
+      this-&gt;table[state][input].next = next;  <I><FONT COLOR="#B22222">/* type conversion */</FONT></I>
+      max_refd_state = MAX(max_refd_state, next);
+
+      <B><FONT COLOR="#A020F0">if</FONT></B>(move == <B><FONT COLOR="#BC8F8F">'L'</FONT></B>) {
+        this-&gt;table[state][input].move = MOVE_LEFT;
+      } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(move == <B><FONT COLOR="#BC8F8F">'R'</FONT></B>) {
+        this-&gt;table[state][input].move = MOVE_RIGHT;
+      } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(move == <B><FONT COLOR="#BC8F8F">'S'</FONT></B>) {
+        this-&gt;table[state][input].move = STOP;
+      } <B><FONT COLOR="#A020F0">else</FONT></B> {
+        fprintf(stderr,
+          <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: %li: bad value for move: %c\n&quot;</FONT></B>, line_num, move);
+        fclose(stream);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -9;
+      }
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(line[0]==<B><FONT COLOR="#BC8F8F">'#'</FONT></B>) {
+      <I><FONT COLOR="#B22222">/* comment line. */</FONT></I>
+      printf(<B><FONT COLOR="#BC8F8F">&quot;%s\n&quot;</FONT></B>, line);
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(line[0] == <B><FONT COLOR="#BC8F8F">'\0'</FONT></B>) {
+      <I><FONT COLOR="#B22222">/* blank line. Do nothing */</FONT></I>
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> {
+      fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: %li: invalid line: '%s'\n&quot;</FONT></B>,
+              line_num, line);
+      fclose(stream);
+      <B><FONT COLOR="#A020F0">return</FONT></B> -11;
+    }
+  }
+
+  fclose(stream);
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(max_refd_state &gt; state) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableRead: refered to non-existent state %li\n&quot;</FONT></B>,
+            max_refd_state);
+    fclose(stream);
+    <B><FONT COLOR="#A020F0">return</FONT></B> -12;
+  }
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> state;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeIndex: translates the signed value of &quot;here&quot; into an index for tape[]
+//
+//
+// DESCRIPTION
+//   if here &gt;= 0, tapeIndex(here) = here * 2
+//   if here &lt; 0 , tapeIndex(here) = - (here * 2 + 1)
+//
+//   The tape index has the property that negative values of here map to
+//   odd values of the index, and non-negative values of here map
+//   to even values of the index, such that no elements of tape[] are
+//   wasted.
+//
+//
+// RETURN VALUE
+//   Returns a positive integer which is the index into this-&gt;tape[]
+//   which corresponds to the (possibly negative) signed this-&gt;here
+//   tape head position.
+*/</FONT></I>
+#<B><FONT COLOR="#5F9EA0">ifdef</FONT></B> <FONT COLOR="#B8860B">FUNCTION</FONT>
+int64_t
+<B><FONT COLOR="#0000FF">tmTapeIndex</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT *this)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;here &gt;= 0) {
+    <B><FONT COLOR="#A020F0">return</FONT></B> this-&gt;here * 2;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    <B><FONT COLOR="#A020F0">return</FONT></B> - (this-&gt;here * 2 + 1);
+  }
+}
+#<B><FONT COLOR="#5F9EA0">else</FONT></B>
+#<B><FONT COLOR="#5F9EA0">define</FONT></B> <B><FONT COLOR="#0000FF">tmTapeIndex</FONT></B>(this) \
+  (((this)-&gt;here &gt;= 0) ? (((this)-&gt;here)*2) : (-(((this)-&gt;here)*2+1)))
+#<B><FONT COLOR="#5F9EA0">endif</FONT></B>
+
+
+
+
+#<B><FONT COLOR="#5F9EA0">define</FONT></B> <B><FONT COLOR="#0000FF">tmTapeFrame</FONT></B>(this) ((this)-&gt;tape[tmTapeIndex(this)])
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeHead: return Turing Machine tape head location given tape index
+//
+//
+// DESCRIPTION
+//   tmTapeHead is the inverse of tmTapeIndex.
+//
+//   If index is even, here is non-negative.
+//   If index is odd, here is negative.
+//   index == 0 corresponds to a this-&gt;here == 0.
+//
+//
+// SEE ALSO
+//   tmTapeIndex
+*/</FONT></I>
+int64_t
+<B><FONT COLOR="#0000FF">tmTapeHead</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT *this, int64_t index)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(index % 2 == 0) {
+    <B><FONT COLOR="#A020F0">return</FONT></B> index / 2;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    <B><FONT COLOR="#A020F0">return</FONT></B> - (index+1) / 2;
+  }
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTableIndex: return lexical index of the Turing machine table
+//
+//
+// DESCRIPTION
+//   When systematically generating all possible Turing machine state
+//   transition tables, it is useful to order those tables.
+//   tmTableIndex takes in a table and generates a unique index for
+//   that table.  It is possible to go back and forth between a table
+//   and its index.
+*/</FONT></I>
+int64_t
+<B><FONT COLOR="#0000FF">tmTableIndex</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT *this)
+{
+  <B><FONT COLOR="#228B22">int</FONT></B>       di;       <I><FONT COLOR="#B22222">/* &quot;digit&quot; index */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B>       si;       <I><FONT COLOR="#B22222">/* state index */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B>       ii;       <I><FONT COLOR="#B22222">/* input index */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B>       dv;       <I><FONT COLOR="#B22222">/* &quot;digit&quot; value */</FONT></I>
+  int64_t ti  = 0;  <I><FONT COLOR="#B22222">/* table index */</FONT></I>
+  int64_t p21 = 1;  <I><FONT COLOR="#B22222">/* power of 21 */</FONT></I>
+
+  <B><FONT COLOR="#A020F0">for</FONT></B>(si=0; si &lt; this-&gt;num_states; si++) {
+    <B><FONT COLOR="#A020F0">for</FONT></B>(ii=0; ii &lt;= this-&gt;charset_max; ii++) {
+      <I><FONT COLOR="#B22222">/* Find which digit we're at */</FONT></I>
+      di = si * this-&gt;num_states + ii;
+
+      <I><FONT COLOR="#B22222">/* Compute lexical value of this table entry */</FONT></I>
+      <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;table[si][ii].move != STOP) {
+        dv =   this-&gt;table[si][ii].write
+             + this-&gt;table[si][ii].next * (this-&gt;charset_max + 1)
+             + this-&gt;table[si][ii].move * (this-&gt;charset_max + 1)
+               * this-&gt;num_states;
+      } <B><FONT COLOR="#A020F0">else</FONT></B> {
+        dv = 20;
+      }
+      <I><FONT COLOR="#B22222">/* Accumulate the table index */</FONT></I>
+      ti += p21 * dv;
+
+      <I><FONT COLOR="#B22222">/* Compute next power of 21 */</FONT></I>
+      p21 *= 21;
+    }
+  }
+  <B><FONT COLOR="#A020F0">return</FONT></B> ti;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTableWrite: write a Turing machine table in a machine readable form
+//
+//
+// DESCRIPTION
+//   tmTableWrite writes a Turing machine table in a way such that it
+//   can be read in by tmTableRead.
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">tmTableWrite</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT * <B><FONT COLOR="#228B22">const</FONT></B> this, <B><FONT COLOR="#228B22">const</FONT></B> <B><FONT COLOR="#228B22">char</FONT></B> * <B><FONT COLOR="#228B22">const</FONT></B> filename)
+{
+  FILE *stream;
+  <B><FONT COLOR="#228B22">int</FONT></B> si;
+  <B><FONT COLOR="#228B22">int</FONT></B> ii;
+  <B><FONT COLOR="#228B22">static</FONT></B> <B><FONT COLOR="#228B22">char</FONT></B> *move_chars = <B><FONT COLOR="#BC8F8F">&quot;LRS&quot;</FONT></B>;
+  <B><FONT COLOR="#228B22">const</FONT></B> int64_t ti = tmTableIndex(this);  <I><FONT COLOR="#B22222">/* table index */</FONT></I>
+
+  <I><FONT COLOR="#B22222">/* Open the tape file for writing */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>((stream=fopen(filename, <B><FONT COLOR="#BC8F8F">&quot;w&quot;</FONT></B>))==NULL) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableWrite: error opening '%s'\n&quot;</FONT></B>, filename);
+    <B><FONT COLOR="#A020F0">return</FONT></B> -1;
+  }
+
+  fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;# %s: table %014lli written from %s version %s\n&quot;</FONT></B>,
+          filename, ti, __FILE__, __DATE__);
+
+  fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;\ncharset_max %i\n&quot;</FONT></B>, this-&gt;charset_max);
+
+  <B><FONT COLOR="#A020F0">for</FONT></B>(si=0; si &lt; this-&gt;num_states; si++) {
+    fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;\nstate %i\n&quot;</FONT></B>, si);
+    <B><FONT COLOR="#A020F0">for</FONT></B>(ii=0; ii &lt;= this-&gt;charset_max; ii++) {
+      fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;input %i write %i move %c next %i\n&quot;</FONT></B>, ii,
+             this-&gt;table[si][ii].write,
+             move_chars[this-&gt;table[si][ii].move],
+             this-&gt;table[si][ii].next);
+    }
+  }
+  fclose(stream);
+  <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* tmTablePrint: print Turing Machine state transition table */</FONT></I>
+#<B><FONT COLOR="#5F9EA0">define</FONT></B> <B><FONT COLOR="#0000FF">tmTablePrint</FONT></B>(this) tmTableCurse(this, -1, -1)
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTableCurse: use curses to print Turing Machine state transition table
+//
+//
+// ARGUMENTS
+//   wy (in): row to print table, where row 0 is the top
+//     if wy is negative then print without using curses
+//
+//   wx (in): column to print table, where colunm 0 is the left
+//
+//
+// DESCRIPTION
+//   The left-most column of the state transition table indicates the
+//   state.  Each row of the state transition table indicates the
+//   instructions to perform for that given state.  Each of the columns
+//   to the right of the leftmost column are for a given input from the
+//   current tape frame.  The entries in the state transition table
+//   have 3 symbols.  The left symbol indicates the value to be written
+//   onto the current tape frame, the middle symbol indicates the
+//   direction that the tape head will move, and the right symbol
+//   indicates the next state to enter.  The entry that corresponds to
+//   the current state and tape input value is highlighted.
+//
+//   If the terminal text window is too small to fit the table, a
+//   message is printed which indicates the minimum number of lines the
+//   window must have in order to display the table.
+//
+//
+// SEE ALSO
+//   tmTablePrint(), tmTapeFrame(), curses library
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">tmTableCurse</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT *this, <B><FONT COLOR="#228B22">const</FONT></B> <B><FONT COLOR="#228B22">int</FONT></B> wy, <B><FONT COLOR="#228B22">const</FONT></B> <B><FONT COLOR="#228B22">int</FONT></B> wx)
+{
+  <B><FONT COLOR="#228B22">static</FONT></B> <B><FONT COLOR="#228B22">char</FONT></B> *move_chars = <B><FONT COLOR="#BC8F8F">&quot;LRS&quot;</FONT></B>;
+
+  int64_t   si;
+  int64_t   ii;
+  <B><FONT COLOR="#228B22">int</FONT></B>    py = wy;
+  <B><FONT COLOR="#228B22">int</FONT></B>  (*print)(<B><FONT COLOR="#228B22">const</FONT></B> <B><FONT COLOR="#228B22">char</FONT></B> *fmt,...);
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt; 0) {
+    print = printw;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    print = printf;
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) move(py, wx);
+  print(<B><FONT COLOR="#BC8F8F">&quot;+---------&quot;</FONT></B>);
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ii=0; ii &lt; this-&gt;charset_max; ii++) {
+    print(<B><FONT COLOR="#BC8F8F">&quot;-----------&quot;</FONT></B>);
+  }
+  print(<B><FONT COLOR="#BC8F8F">&quot;---------+\n&quot;</FONT></B>);
+  py++;
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) move(py,wx);
+  print(<B><FONT COLOR="#BC8F8F">&quot;| state | &quot;</FONT></B>);
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ii=0; ii &lt;= this-&gt;charset_max; ii++) {
+    print(<B><FONT COLOR="#BC8F8F">&quot; %5li   | &quot;</FONT></B>, ii);
+  }
+  print(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+  py++;
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) move(py,wx);
+  print(<B><FONT COLOR="#BC8F8F">&quot;+-------+-&quot;</FONT></B>);
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ii=0; ii &lt; this-&gt;charset_max; ii++) {
+    print(<B><FONT COLOR="#BC8F8F">&quot;---------+-&quot;</FONT></B>);
+  }
+  print(<B><FONT COLOR="#BC8F8F">&quot;---------|\n&quot;</FONT></B>);
+  py++;
+
+  <B><FONT COLOR="#A020F0">for</FONT></B>(si=0; si &lt; this-&gt;num_states; si++) {
+    <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) move(py,wx);
+    print(<B><FONT COLOR="#BC8F8F">&quot;| %5li :&quot;</FONT></B>, si);
+
+    <B><FONT COLOR="#A020F0">for</FONT></B>(ii=0; ii &lt;= this-&gt;charset_max; ii++) {
+      <B><FONT COLOR="#A020F0">if</FONT></B>((this-&gt;state == si) &amp;&amp; (tmTapeFrame(this) == ii)) {
+        <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) attron(A_STANDOUT);
+        print(<B><FONT COLOR="#BC8F8F">&quot;&gt;&quot;</FONT></B>);
+      } <B><FONT COLOR="#A020F0">else</FONT></B> {
+        print(<B><FONT COLOR="#BC8F8F">&quot; &quot;</FONT></B>);
+      }
+
+      print(<B><FONT COLOR="#BC8F8F">&quot;%2li &quot;</FONT></B>, this-&gt;table[si][ii].write);
+      print(<B><FONT COLOR="#BC8F8F">&quot;%2c &quot;</FONT></B>, move_chars[this-&gt;table[si][ii].move]);
+      print(<B><FONT COLOR="#BC8F8F">&quot;%2li&quot;</FONT></B>, this-&gt;table[si][ii].next);
+
+      <B><FONT COLOR="#A020F0">if</FONT></B>((this-&gt;state == si) &amp;&amp; (tmTapeFrame(this) == ii)) {
+        print(<B><FONT COLOR="#BC8F8F">&quot;&lt;&quot;</FONT></B>);
+        <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) attroff(A_STANDOUT);
+      } <B><FONT COLOR="#A020F0">else</FONT></B> {
+        print(<B><FONT COLOR="#BC8F8F">&quot; &quot;</FONT></B>);
+      }
+
+      print(<B><FONT COLOR="#BC8F8F">&quot;|&quot;</FONT></B>);
+    }
+    print(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+    py++;
+
+    <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) move(py,wx);
+    print(<B><FONT COLOR="#BC8F8F">&quot;+-------+-&quot;</FONT></B>);
+    <B><FONT COLOR="#A020F0">for</FONT></B>(ii=0; ii &lt; this-&gt;charset_max; ii++) {
+      print(<B><FONT COLOR="#BC8F8F">&quot;---------+-&quot;</FONT></B>);
+    }
+    print(<B><FONT COLOR="#BC8F8F">&quot;---------|\n&quot;</FONT></B>);
+    py++;
+  }
+
+  <I><FONT COLOR="#B22222">/* Get size of the curses window */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) {
+    <B><FONT COLOR="#228B22">int</FONT></B> min_x, min_y;
+    <B><FONT COLOR="#228B22">int</FONT></B> max_x, max_y;
+    <B><FONT COLOR="#228B22">int</FONT></B> size_y;
+
+    getbegyx(stdscr, min_y, min_x);
+    getmaxyx(stdscr, max_y, max_x);
+    size_y = max_y - min_y - py;
+    <B><FONT COLOR="#A020F0">if</FONT></B>(size_y &lt; 0) {
+      move(wy,wx);
+      clrtobot();
+      move(wy,wx);
+      printw(<B><FONT COLOR="#BC8F8F">&quot;\n\nWindow too short for table.  &quot;</FONT></B>);
+      printw(<B><FONT COLOR="#BC8F8F">&quot;Need at least %i lines for this table.\n\n&quot;</FONT></B>, py);
+    }
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(wy &gt;= 0) refresh();
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeAlloc: Allocate more memory for tape, if needed
+//
+//
+// DESCRIPTION
+//   The tape of an abstract Turing Machine is infinitely long.  In
+//   this simulation, the tape is finite, obviously, but the tape can
+//   &quot;grow&quot; dynamically.  Any time a portion of the tape is accessed
+//   which was not previously represented (i.e., was not previously
+//   allocated), more tape is allocated.  tmTapeAlloc() should be
+//   called every time the this-&gt;here tape head position is changed.
+//
+//
+// NOTE
+//   If the memory allocation fails, tmTapeAlloc() exits the process.
+//
+//
+// SEE ALSO
+//   tmTapeMove(), tmTapeIndex(), realloc()
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">tmTapeAlloc</FONT></B>(TuringMachineT *this)
+{
+  int64_t ti = tmTapeIndex(this);
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;tape_len &lt;= ti) {
+    int64_t ni;
+
+    <B><FONT COLOR="#A020F0">if</FONT></B>((this-&gt;tape = realloc(this-&gt;tape, <B><FONT COLOR="#A020F0">sizeof</FONT></B>(Char) * (ti+1)))==NULL)
+    {
+      fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTapeAlloc: out of memory\n&quot;</FONT></B>);
+      exit(1);
+    }
+
+    <I><FONT COLOR="#B22222">/* Blank out the new tape elements */</FONT></I>
+    <B><FONT COLOR="#A020F0">for</FONT></B>(ni=this-&gt;tape_len; ni &lt;= ti; ni++) {
+      <I><FONT COLOR="#B22222">/*printf(&quot;tmTapeAlloc: blanking tape[%li]\n&quot;, ni);*/</FONT></I>
+      this-&gt;tape[ni] = 0;
+    }
+
+    this-&gt;tape_len = ti + 1;
+  }
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeMove: move Turing Machine tape head
+//
+//
+// ARGUMENTS
+//   this (in/out): Turing Machine
+//   move (in): direction to move tape head.
+//
+//
+// DESCRIPTION
+//   tmTapeMove() moved the tape head of a Turing Machine either left
+//   or right by one frame.  tmTapeMove() should be used as the only
+//   way to move a tape head.
+//
+//   If the tape had not previously been long enough to refer to the
+//   index that results from the move, then the tape is reallocated to
+//   include the new tape index, and the new tape elements are
+//   initialized to blank (0).
+//
+//
+// RETURN VALUE
+//   Return -1 if a Stop instruction was reached.
+//   Return 0 if a MOVE_LEFT or a MOVE_RIGHT was performed.
+//
+//
+// SEE ALSO
+//   tmTapeAlloc()
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">tmTapeMove</FONT></B>(TuringMachineT *this, Move move)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(move==MOVE_LEFT) {
+    this-&gt;here --;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(move==MOVE_RIGHT) {
+    this-&gt;here ++;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    <B><FONT COLOR="#A020F0">return</FONT></B> -1;
+  }
+  tmTapeAlloc(this);
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeWrite: write a tape for a Turing Machine in machine readable way
+//
+//
+// DESCRIPTION
+//   Write the tape of a Turing Machine in a file format suitable
+//   for the tape to be read in by tmTapeRead.
+//
+//
+// RETURN VALUE
+//   If there was an error, return a non-positive number.
+//   If the tape was written without error, return a positive number.
+//
+//
+// SEE ALSO
+//   tmTapeRead, tmTapeHead, tmTapeFrame
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">tmTapeWrite</FONT></B>(TuringMachineT *this, <B><FONT COLOR="#228B22">const</FONT></B> <B><FONT COLOR="#228B22">char</FONT></B> *filename)
+{
+  <B><FONT COLOR="#228B22">const</FONT></B> int64_t here     = this-&gt;here;
+
+  <I><FONT COLOR="#B22222">/* far_head: head position corresponding to the end of the tape */</FONT></I>
+  <B><FONT COLOR="#228B22">const</FONT></B> int64_t far_head = tmTapeHead(this, this-&gt;tape_len - 1);
+
+  int64_t       start_index;
+  int64_t       last_index;
+  FILE      *stream;
+
+  <I><FONT COLOR="#B22222">/* Open the tape file for writing */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>((stream=fopen(filename, <B><FONT COLOR="#BC8F8F">&quot;w&quot;</FONT></B>))==NULL) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTapeWrite: error opening '%s'\n&quot;</FONT></B>, filename);
+    <B><FONT COLOR="#A020F0">return</FONT></B> -1;
+  }
+
+  <I><FONT COLOR="#B22222">/* Print the comment line */</FONT></I>
+  fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;# tmTapeWrite: %lli frames, head at %lli\n&quot;</FONT></B>,
+          this-&gt;tape_len, this-&gt;here);
+
+  <I><FONT COLOR="#B22222">/* Print the starting index */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>(far_head &gt;= 0) {
+    start_index = -far_head;
+    last_index = far_head;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    start_index = far_head;
+    last_index = -(far_head+1);
+  }
+  fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;start %lli\n&quot;</FONT></B>, start_index);
+
+  <I><FONT COLOR="#B22222">/* Print the current state */</FONT></I>
+  {
+    <B><FONT COLOR="#228B22">const</FONT></B> int32_t state = this-&gt;state;  <I><FONT COLOR="#B22222">/* type conversion */</FONT></I>
+    fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;state %li\n&quot;</FONT></B>, state);
+  }
+
+  <I><FONT COLOR="#B22222">/* Print the tape frames */</FONT></I>
+  {
+    int64_t frame;
+
+    <B><FONT COLOR="#A020F0">for</FONT></B>(this-&gt;here = start_index; this-&gt;here &lt;= last_index; this-&gt;here ++)
+    {
+      frame = tmTapeFrame(this);  <I><FONT COLOR="#B22222">/* type conversion */</FONT></I>
+      <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;here == here) {
+        fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;# tape head at %lli\nhead &quot;</FONT></B>, this-&gt;here);
+      }
+      fprintf(stream, <B><FONT COLOR="#BC8F8F">&quot;%lli\n&quot;</FONT></B>, frame);
+    }
+  }
+
+  <I><FONT COLOR="#B22222">/* put tape head back where it was */</FONT></I>
+  this-&gt;here = here;
+
+  <I><FONT COLOR="#B22222">/* Close the output file */</FONT></I>
+  fclose(stream);
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeRead: read a tape for a Turing Machine
+//
+//
+// TAPE FILE FORMAT
+//   The tape file is a text file which described the initial value of
+//   the tape.  The first line of the tape file must be a comment line
+//   of the form
+//
+//     # comment
+//
+//   The second line of the tape file must be of the form
+//
+//     start &lt;integer&gt;
+//
+//   where the integer is the starting index of the rest of the values
+//   in the tape file.
+//
+//   The third and subsequent lines in the tape file are tape frame
+//   values or a line of the form
+//
+//     state &lt;integer&gt;
+//
+//   A line beginning with the string &quot;state&quot; is used to indicate the
+//   starting state of the machine.  If no &quot;state&quot; line is present,
+//   then state 0 is assumed to be the starting state.  Usually, the
+//   user will not supply a starting state because    the convention
+//   with Turing Machines is that their initial state is the first
+//   state in the table.  The &quot;state&quot; ine feature is intended to be
+//   used only for restarting a Turing Machine simulation from a
+//   previous execution.  Only one &quot;state&quot; line may be present.
+//
+//   The values of the tape frames are interpretted as sequential from
+//   left to right, starting at the index given on the second line of
+//   the tape file.  Tape values must be one per line.
+//
+//   If a tape value is preceded by the string &quot;head&quot; then the
+//   corresponding tape frame will be the starting location of the tape
+//   head when the simulation starts.  If the tape head is not
+//   specified in this way (i.e., if there are no tape values preceded
+//   by the &quot;head&quot; string) then the initial head location will be at
+//   index 0.  If more than one &quot;head&quot; line is present in the tape file,
+//   an error occurs.
+//
+//
+// NOTE
+//   At least enough memory is allocated for the tape to hold all of
+//   the characters read from the tape file.  Any extra memory
+//   allocated for the tape is set to blank.
+//
+//
+// RETURN VALUE
+//   Return negative value if error occurs.
+//   Return positive value if no errors occured.
+//
+//
+// SEE ALSO
+//   tmTapeMove(), tmTapeAlloc(), tmTapeWrite()
+*/</FONT></I>
+int64_t
+<B><FONT COLOR="#0000FF">tmTapeRead</FONT></B>(TuringMachineT *this, <B><FONT COLOR="#228B22">char</FONT></B> *filename)
+{
+  <B><FONT COLOR="#228B22">char</FONT></B>  line[1024];      <I><FONT COLOR="#B22222">/* input line buffer, for parsing file */</FONT></I>
+  int64_t  start;           <I><FONT COLOR="#B22222">/* index of first frame in tape file */</FONT></I>
+  int32_t  character;       <I><FONT COLOR="#B22222">/* input character from tape file */</FONT></I>
+  int32_t  line_num    = 1; <I><FONT COLOR="#B22222">/* current file line number.  used for debugging */</FONT></I>
+  FILE *stream;          <I><FONT COLOR="#B22222">/* tape file stream */</FONT></I>
+  int64_t  head_start  = 0; <I><FONT COLOR="#B22222">/* starting head location.  Default is 0 */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B>   head_given  = 0; <I><FONT COLOR="#B22222">/* flag: was head location present in file? */</FONT></I>
+  int32_t  state;           <I><FONT COLOR="#B22222">/* initial state */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B>   state_given = 0; <I><FONT COLOR="#B22222">/* flag: was initial state present in file? */</FONT></I>
+
+
+
+  <I><FONT COLOR="#B22222">/* Open the tape file for reading */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>((stream=fopen(filename, <B><FONT COLOR="#BC8F8F">&quot;r&quot;</FONT></B>))==NULL) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTapeRead: error opening '%s'\n&quot;</FONT></B>, filename);
+    <B><FONT COLOR="#A020F0">return</FONT></B> -1;
+  }
+
+  <I><FONT COLOR="#B22222">/* Read and ignore the first line -- comment line.
+  // Note that the comment line must be present,
+  // and must be the first line of the tape file.
+  */</FONT></I>
+  fgets(line, 1023, stream);
+  line_num++;
+  printf(<B><FONT COLOR="#BC8F8F">&quot;%s: %s\n&quot;</FONT></B>, filename, line);
+
+  <I><FONT COLOR="#B22222">/* Read the starting-index */</FONT></I>
+  <I><FONT COLOR="#B22222">/* This scanf will take an empty string as a valid integer.
+  // Sounds fucked up to me.  In any case, that integer takes the value
+  // zero which is acceptable.
+  */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>((fscanf(stream, <B><FONT COLOR="#BC8F8F">&quot;start %lli \n&quot;</FONT></B>, &amp;start))!=1) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTapeRead: error reading start index\n&quot;</FONT></B>);
+    fclose(stream);
+    <B><FONT COLOR="#A020F0">return</FONT></B> -2;  <I><FONT COLOR="#B22222">/* return &quot;error&quot; status */</FONT></I>
+  }
+  line_num++;
+
+  <I><FONT COLOR="#B22222">/* Set the tape head position at the left end of where the
+  // tape file provides tape data.
+  */</FONT></I>
+  this-&gt;here = start;
+
+  <I><FONT COLOR="#B22222">/* Allocate some memory for the tape */</FONT></I>
+  tmTapeAlloc(this);  <I><FONT COLOR="#B22222">/* call tmTapeAlloc whenever this-&gt;here is changed */</FONT></I>
+
+  <I><FONT COLOR="#B22222">/* Move tape head one frame to the left because the tape head is moved
+  // to the right just before setting the frame value.
+  // This have to be done after the tmTapeAlloc because we only want to
+  // allocate as much space as we need, and no more.  It would not be
+  // crucial that we do not allocate more space except that if the tape
+  // being read is a tape written from a previous run, and more tape
+  // were allocated than necessary, then the tape would gradually grow
+  // unnecessarily.
+  */</FONT></I>
+  this-&gt;here -- ;
+
+  <I><FONT COLOR="#B22222">/* Read the tape characters from the tape file,
+  // and store them in the Turing Machine tape array.
+  */</FONT></I>
+  <B><FONT COLOR="#A020F0">while</FONT></B>(fgets(line, 1024, stream)) {
+    line[strlen(line)-1] = <B><FONT COLOR="#BC8F8F">'\0'</FONT></B>;  <I><FONT COLOR="#B22222">/* remove trailing newline */</FONT></I>
+
+    <B><FONT COLOR="#A020F0">if</FONT></B>(   ((sscanf(line, <B><FONT COLOR="#BC8F8F">&quot; %li &quot;</FONT></B>, &amp;character))==1)
+       || ((sscanf(line, <B><FONT COLOR="#BC8F8F">&quot;head %li &quot;</FONT></B>, &amp;character))==1)
+      )
+    {
+      <B><FONT COLOR="#A020F0">if</FONT></B>((character &lt; -1) || (character &gt; this-&gt;charset_max)) {
+        <I><FONT COLOR="#B22222">// int32_t charset_max = this-&gt;charset_max;  /* type conversion */
+</FONT></I>        fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTapeRead: %li: character %li too big &gt; %i\n&quot;</FONT></B>,
+                line_num, character, this-&gt;charset_max);
+        <B><FONT COLOR="#A020F0">return</FONT></B> -3;
+      }
+
+      tmTapeMove(this, MOVE_RIGHT);
+      tmTapeFrame(this) = character;  <I><FONT COLOR="#B22222">/* type conversion */</FONT></I>
+
+      <B><FONT COLOR="#A020F0">if</FONT></B>(!strncmp(line, <B><FONT COLOR="#BC8F8F">&quot;head&quot;</FONT></B>, 4)) {
+        <B><FONT COLOR="#A020F0">if</FONT></B>(head_given) {
+          fprintf(stderr,
+                  <B><FONT COLOR="#BC8F8F">&quot;tmTapeRead: err: %li: multiple head locations given\n&quot;</FONT></B>,
+                  line_num);
+          <B><FONT COLOR="#A020F0">return</FONT></B> -4;
+        }
+        head_start = this-&gt;here;
+        head_given = 1;
+      }
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(sscanf(line, <B><FONT COLOR="#BC8F8F">&quot;state %li &quot;</FONT></B>, &amp;state)==1) {
+      <B><FONT COLOR="#A020F0">if</FONT></B>(state_given) {
+        fprintf(stderr,
+                <B><FONT COLOR="#BC8F8F">&quot;tmTapeRead: err: %li: multiple initial states given\n&quot;</FONT></B>,
+                line_num);
+          <B><FONT COLOR="#A020F0">return</FONT></B> -5;
+      }
+      state_given = 1;
+      this-&gt;state = state;
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B> (line[0] == <B><FONT COLOR="#BC8F8F">'#'</FONT></B>) {
+      <I><FONT COLOR="#B22222">/* comment line -- ignore */</FONT></I>
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B> (line[0] == <B><FONT COLOR="#BC8F8F">'\0'</FONT></B>) {
+      <I><FONT COLOR="#B22222">/* blank line -- ignore */</FONT></I>
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> {
+      fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTapeRead: %li: error reading character\n&quot;</FONT></B>, line_num);
+      fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTapeRead: %li: line='%s'\n&quot;</FONT></B>, line_num, line);
+      fclose(stream);
+      <B><FONT COLOR="#A020F0">return</FONT></B> -6;  <I><FONT COLOR="#B22222">/* return &quot;error&quot; status */</FONT></I>
+    }
+
+    <I><FONT COLOR="#B22222">/* Increment line counter for The next pass through this loop body */</FONT></I>
+    line_num ++;
+  }
+
+  <I><FONT COLOR="#B22222">/* Close the tape file */</FONT></I>
+  fclose(stream);
+
+  <I><FONT COLOR="#B22222">/* Move tape head to initial position */</FONT></I>
+  this-&gt;here = head_start;
+  tmTapeAlloc(this);  <I><FONT COLOR="#B22222">/* call tmTapeAlloc whenever this-&gt;here is changed */</FONT></I>
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> line_num;  <I><FONT COLOR="#B22222">/* return &quot;okay&quot; status */</FONT></I>
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeBlank:  erase Turing machine tape and initialize a new one
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">tmTapeBlank</FONT></B>(TuringMachineT *this)
+{
+  tmTapeFree(this);
+
+  <I><FONT COLOR="#B22222">/* Set the tape head position at the left end of where the
+  // tape file provides tape data.
+  */</FONT></I>
+  this-&gt;here = 0;
+
+  <I><FONT COLOR="#B22222">/* Allocate some memory for the tape */</FONT></I>
+  tmTapeAlloc(this);  <I><FONT COLOR="#B22222">/* call tmTapeAlloc whenever this-&gt;here is changed */</FONT></I>
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapePrint: print Turing Machine tape
+//
+//
+// DESCRIPTION
+//   The tape of a Turing Machine is printed.  The tape frame at which
+//   the tape head is sitting is indicated by a head location marker The
+//   tape frame where the head started (tape frame 0) is indicated by a
+//   frame index marker.
+//
+//
+// SEE ALSO
+//   tmTapeIndex()
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">tmTapePrint</FONT></B>(TuringMachineT *this)
+{
+  int64_t ti;
+  int64_t left_end;
+  int64_t right_end;
+  int64_t here = this-&gt;here;
+
+  printf(<B><FONT COLOR="#BC8F8F">&quot;TAPE:\n&quot;</FONT></B>);
+  printf(<B><FONT COLOR="#BC8F8F">&quot;-----\n&quot;</FONT></B>);
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;tape_len % 2 == 0) {
+    <I><FONT COLOR="#B22222">/* last element on tape is odd, i.e. has a negative index */</FONT></I>
+    left_end = - this-&gt;tape_len / 2;
+    right_end = this-&gt;tape_len + left_end - 1;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    <I><FONT COLOR="#B22222">/* last element on tape is even, i.e. has a non-negative index */</FONT></I>
+    right_end = this-&gt;tape_len / 2;
+    left_end = right_end - this-&gt;tape_len + 1;
+  }
+
+#<B><FONT COLOR="#5F9EA0">if</FONT></B> (<FONT COLOR="#B8860B">VERBOSE</FONT> &gt;= 2)
+  printf(<B><FONT COLOR="#BC8F8F">&quot;tape spans from %li to %li\n&quot;</FONT></B>, left_end, right_end);
+  this-&gt;here = left_end;
+  printf(<B><FONT COLOR="#BC8F8F">&quot;tape indices are %li&quot;</FONT></B>, tmTapeIndex(this));
+  this-&gt;here = right_end;
+  printf(<B><FONT COLOR="#BC8F8F">&quot; to %li\n&quot;</FONT></B>, tmTapeIndex(this));
+  this-&gt;here = here;
+#<B><FONT COLOR="#5F9EA0">endif</FONT></B>
+
+  <I><FONT COLOR="#B22222">/* Print tape */</FONT></I>
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ti=left_end; (this-&gt;here=ti) &lt;= right_end; ti++) {
+    int64_t tape_frame = tmTapeFrame(this);  <I><FONT COLOR="#B22222">/* type conversion */</FONT></I>
+
+    <B><FONT COLOR="#A020F0">if</FONT></B>(ti==0) {
+      printf(<B><FONT COLOR="#BC8F8F">&quot; [0]&gt;&quot;</FONT></B>);
+    }
+    <B><FONT COLOR="#A020F0">if</FONT></B>(ti==here) {
+      printf(<B><FONT COLOR="#BC8F8F">&quot; [head@%lli]&gt;&quot;</FONT></B>, ti);
+    }
+    printf(<B><FONT COLOR="#BC8F8F">&quot; %1lli&quot;</FONT></B>, tape_frame);
+  }
+  this-&gt;here = here;  <I><FONT COLOR="#B22222">/* restore tape head location */</FONT></I>
+  printf(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* tmTapeOneCount: count the number of '1's on a Turing Machine tape
+//
+// RETURN VALUE
+//   Return the number of '1's on the tape.
+*/</FONT></I>
+int64_t
+<B><FONT COLOR="#0000FF">tmTapeOneCount</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT *this)
+{
+  int64_t ti;
+  int64_t count = 0;
+
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ti=0; ti &lt; this-&gt;tape_len; ti++) {
+    <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;tape[ti] == 1) {
+      count ++;
+    }
+  }
+  <B><FONT COLOR="#A020F0">return</FONT></B> count;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTapeCurse: use curses to display Turing Machine tape segment
+//
+//
+// DESCRIPTION
+//   Display a segment of a Turing Machine tape.  The length of the
+//   segment which is displayed depends on the width of the terminal
+//   screen.
+//
+//   The tape display has three parts, verticlly stacked: the tape
+//   indices, the tape values, and the tape head position.
+//
+//   The tape display shows the tape indices above the tape values.
+//   These indices are not actually used by the Turing Machine, but
+//   they are useful to a human trying to keep track of what the Turing
+//   Machine is doing.  The tape index 0 is the starting point for the
+//   tape head.
+//
+//   The tape values are printed with spaces between the values.
+//   Remember that, for a true Turing Machine, the tape is infinitely
+//   long.  However, in this simulation, the tape's stored length is
+//   finite (although the tape will &quot;grow&quot; indefinitely, as new
+//   portions are accessed) .  When the entire stored tape will not fit
+//   on the screen, then ellipsis are displayed indicating that there
+//   is more of the tape than what is being displayed.  Remember that
+//   if ellipsis are not visible, it means that the representation of
+//   the tape is not currently being stored.  It does NOT mean that you
+//   are looking at the end of the tape.  There is no end of the tape.
+//   The tape is infinite.
+//
+//   The tape values will scroll left and right as the tape head
+//   moves.  The tape head will also move, when scrolling the tape is
+//   not appropriate.
+//
+//   Below the tape values portion of the tape display is the tape head
+//   location indicator, along with the tape index where the tape head
+//   sits.  Again, this index is not used by the abstract Turing
+//   Machine, but it is useful for humans.
+//
+//
+// ARGUMENTS
+//   wy (in): row to print tape, where row 0 is the top
+//   wx (in): column to print tape, where colunm 0 is the left
+//
+//
+// SEE ALSO
+//   tmTapePrint(), curses library
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">tmTapeCurse</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT *this, <B><FONT COLOR="#228B22">int</FONT></B> wy, <B><FONT COLOR="#228B22">int</FONT></B> wx)
+{
+  <B><FONT COLOR="#228B22">int</FONT></B>            size_x;
+  int64_t           ti;
+  int64_t           left_end;
+  int64_t           right_end;
+  int64_t           tape_print_left;
+  int64_t           tape_print_right;
+  TuringMachineT shallow_copy      = *this;
+
+  <I><FONT COLOR="#B22222">/* Get size of the curses window */</FONT></I>
+  {
+    <B><FONT COLOR="#228B22">int</FONT></B> min_x, min_y;
+    <B><FONT COLOR="#228B22">int</FONT></B> max_x, max_y;
+
+    getbegyx(stdscr, min_y, min_x);
+    getmaxyx(stdscr, max_y, max_x);
+    size_x = max_x - min_x - 16 - wx;
+  }
+
+  <I><FONT COLOR="#B22222">/* Find ends of tape */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;tape_len % 2 == 0) {
+    <I><FONT COLOR="#B22222">/* last element on tape is odd, i.e. has a negative index */</FONT></I>
+    left_end  = - this-&gt;tape_len / 2;
+    right_end =   this-&gt;tape_len + left_end - 1;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    <I><FONT COLOR="#B22222">/* last element on tape is even, i.e. has a non-negative index */</FONT></I>
+    right_end =             this-&gt;tape_len / 2;
+    left_end  = right_end - this-&gt;tape_len + 1;
+  }
+
+  <I><FONT COLOR="#B22222">/* Calculate what segment of the tape to display */</FONT></I>
+  tape_print_left  = this-&gt;here - size_x / 4;
+  tape_print_right = this-&gt;here + size_x / 4;
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(tape_print_left &lt; left_end) {
+    <I><FONT COLOR="#B22222">/* Make sure we do not try to refer off end of tape */</FONT></I>
+    tape_print_left  = left_end;
+    <I><FONT COLOR="#B22222">/* ... but try to print as much of the tape as possible */</FONT></I>
+    tape_print_right = tape_print_left + size_x / 2;
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(tape_print_right &gt; right_end) {
+    <I><FONT COLOR="#B22222">/* Make sure we do not try to refer off end of tape */</FONT></I>
+    tape_print_right = right_end;
+    <I><FONT COLOR="#B22222">/* ... but try to print as much of the tape as possible */</FONT></I>
+    tape_print_left  = tape_print_right - size_x / 2;
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(tape_print_left &lt; left_end) {
+    <I><FONT COLOR="#B22222">/* Make sure we do not try to refer off end of tape */</FONT></I>
+    tape_print_left = left_end;
+  }
+
+
+  <I><FONT COLOR="#B22222">/* Print tape index marker value. */</FONT></I>
+  move(wy, wx);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;   &quot;</FONT></B>);
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ti=tape_print_left; (ti &lt;= tape_print_right) &amp;&amp; (ti%10 != 0); ti++) {
+      printw(<B><FONT COLOR="#BC8F8F">&quot;  &quot;</FONT></B>);
+  }
+  <B><FONT COLOR="#A020F0">for</FONT></B>(; ti &lt;= tape_print_right; ti+=10) {
+      printw(<B><FONT COLOR="#BC8F8F">&quot; %-19li&quot;</FONT></B>, ti);
+  }
+  printw(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+  wy++;
+
+  <I><FONT COLOR="#B22222">/* Print tape index marker. */</FONT></I>
+  move(wy, wx);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;   &quot;</FONT></B>);
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ti=tape_print_left; ti &lt;= tape_print_right; ti++) {
+    <B><FONT COLOR="#A020F0">if</FONT></B>(ti%10 == 0) {
+      printw(<B><FONT COLOR="#BC8F8F">&quot; |&quot;</FONT></B>);
+    } <B><FONT COLOR="#A020F0">else</FONT></B> {
+      printw(<B><FONT COLOR="#BC8F8F">&quot;  &quot;</FONT></B>);
+    }
+  }
+  printw(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+  wy++;
+
+
+  <I><FONT COLOR="#B22222">/* Print tape */</FONT></I>
+  move(wy, wx);
+  <B><FONT COLOR="#A020F0">if</FONT></B>(tape_print_left &gt; left_end) {
+    printw(<B><FONT COLOR="#BC8F8F">&quot;...&quot;</FONT></B>);
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    printw(<B><FONT COLOR="#BC8F8F">&quot;   &quot;</FONT></B>);
+  }
+
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ti=tape_print_left; ti &lt;= tape_print_right; ti++) {
+    shallow_copy.here = ti;
+    printw(<B><FONT COLOR="#BC8F8F">&quot; %1li&quot;</FONT></B>, this-&gt;tape[tmTapeIndex(&amp;shallow_copy)]);
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(tape_print_right &lt; right_end) {
+    printw(<B><FONT COLOR="#BC8F8F">&quot; ...&quot;</FONT></B>);
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    printw(<B><FONT COLOR="#BC8F8F">&quot;    &quot;</FONT></B>);
+  }
+  printw(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+  wy++;
+
+
+  <I><FONT COLOR="#B22222">/* Print tape head marker, &quot;^&quot; */</FONT></I>
+  move(wy, wx);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;   &quot;</FONT></B>);
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ti=tape_print_left; ti &lt;= tape_print_right; ti++) {
+    <B><FONT COLOR="#A020F0">if</FONT></B>(ti == this-&gt;here) {
+      printw(<B><FONT COLOR="#BC8F8F">&quot; ^&quot;</FONT></B>);
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+    } <B><FONT COLOR="#A020F0">else</FONT></B> {
+      printw(<B><FONT COLOR="#BC8F8F">&quot;  &quot;</FONT></B>);
+    }
+  }
+  printw(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+  wy++;
+
+
+  <I><FONT COLOR="#B22222">/* Print tape head location value. */</FONT></I>
+  move(wy, wx);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;   &quot;</FONT></B>);
+  <B><FONT COLOR="#A020F0">for</FONT></B>(ti=tape_print_left; ti &lt;= tape_print_right; ti++) {
+    <B><FONT COLOR="#A020F0">if</FONT></B>(ti == this-&gt;here) {
+      printw(<B><FONT COLOR="#BC8F8F">&quot;% li&quot;</FONT></B>, this-&gt;here);
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+    } <B><FONT COLOR="#A020F0">else</FONT></B> {
+      printw(<B><FONT COLOR="#BC8F8F">&quot;  &quot;</FONT></B>);
+    }
+  }
+  printw(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmUpdate: update the state and tape of a Turing Machine
+//
+//
+// DESCRIPTION
+//   A single step in the execution of the simulation of a Turing
+//   Machine involves these steps:
+//     (1) Read the current tape frame.  This is the &quot;input&quot;.
+//     (2) Look in the state transition table at the entry for the
+//         current state and input tape frame value.  This entry will
+//         have 3 fields:
+//
+//           (a) what to write (output) at the current tape frame
+//           (b) which way to move the tape head
+//           (c) what state to enter into next.
+//
+//          Alternatively, the entry could simply be a &quot;stop&quot;
+//          instruction.
+//
+//     (3) If the instruction was &quot;stop&quot; then stop.  Otherwise, write,
+//         at the current tape frame, the output
+//     (4) Move the tape head.
+//     (5) Change the state.
+//
+//   tmUpdate performs all of these steps.
+//
+//   Presumably, tmUpdate will be called from within a loop.  That loop
+//   should break when tmUpdate reaches a &quot;stop&quot; instruction.
+//
+//
+// NOTE
+//   The &quot;stop&quot; instruction may be accompanied by a &quot;write&quot;.  It seems
+//   that the definition of a Turing Machine varies with respect to this
+//   detail.
+//
+//
+// RETURN VALUE
+//   Return 1 if a &quot;stop&quot; statement was reached.
+//   Return 0 if a &quot;MOVE_LEFT&quot; or &quot;MOVE_RIGHT&quot; was done to the tape
+//   head, along with the associated other steps.
+//
+//
+// SEE ALSO
+//   tmTapeMove(), tmTapeFrame(), tmSimulate()
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">tmUpdate</FONT></B>(TuringMachineT *this)
+{
+  <I><FONT COLOR="#B22222">/* Read the tape here */</FONT></I>
+  <B><FONT COLOR="#228B22">const</FONT></B> Char input  = tmTapeFrame(this);
+  <B><FONT COLOR="#228B22">const</FONT></B> Move move   = this-&gt;table[this-&gt;state][input].move;
+
+  <I><FONT COLOR="#B22222">/* Write the value for this input */</FONT></I>
+  tmTapeFrame(this) = this-&gt;table[this-&gt;state][input].write;
+
+  <I><FONT COLOR="#B22222">/* Move the tape */</FONT></I>
+  tmTapeMove(this, this-&gt;table[this-&gt;state][input].move);
+
+  <I><FONT COLOR="#B22222">/* Set the machine into the new state */</FONT></I>
+  this-&gt;state = this-&gt;table[this-&gt;state][input].next;
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(STOP == move) {
+    <B><FONT COLOR="#A020F0">return</FONT></B> 1; <I><FONT COLOR="#B22222">/* Turing machine reached STOP */</FONT></I>
+  }
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0; <I><FONT COLOR="#B22222">/* keep going */</FONT></I>
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* tmStatePrint: print the current state and tape head position
+//
+// For debugging.
+//
+// SEE ALSO
+//   tmStateCurse()
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">tmStatePrint</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT *this)
+{
+  <I><FONT COLOR="#B22222">// int32_t state = this-&gt;state;  /* type conversion */
+</FONT></I>  printf(<B><FONT COLOR="#BC8F8F">&quot;state %i    head %lli\n&quot;</FONT></B>, this-&gt;state, this-&gt;here);
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmSimulate: perform a Turing Machine simulation
+//
+//
+// DESCRIPTION
+//   A Turing Machine simulation is performed without any frills.
+//
+//
+// ARGUMENTS
+//   max_iters (in): maximum number of iterations (shifts) before quitting
+//
+//
+// RETURN VALUE
+//   Returns number of shifts if stop occured withing turing machine.
+//   Returns -1 if max_iters was reached.
+//
+//
+// SEE ALSO
+//   tmUpdate(), tmVisualSimulate()
+*/</FONT></I>
+int64_t
+<B><FONT COLOR="#0000FF">tmSimulate</FONT></B>(TuringMachineT *this, int64_t max_iters, int64_t tape_len_max)
+{
+  int64_t       stop      = 0;
+  int64_t       iters;
+
+#<B><FONT COLOR="#5F9EA0">ifdef</FONT></B> <FONT COLOR="#B8860B">BUSY_BEAVER_SEARCH</FONT>
+  <I><FONT COLOR="#B22222">/* The BUSY_BEAVER_SEARCH code slows this loop down by %. */</FONT></I>
+  <B><FONT COLOR="#228B22">const</FONT></B> int64_t iter_test = this-&gt;num_states * (this-&gt;charset_max + 1);
+#<B><FONT COLOR="#5F9EA0">endif</FONT></B>
+
+  <B><FONT COLOR="#A020F0">for</FONT></B>(iters=0;
+      !stop &amp;&amp; (iters &lt; max_iters) &amp;&amp; (this-&gt;tape_len &lt; tape_len_max);
+      iters++)
+  {
+    stop = tmUpdate(this);
+#<B><FONT COLOR="#5F9EA0">ifdef</FONT></B> <FONT COLOR="#B8860B">BUSY_BEAVER_SEARCH</FONT>
+    <B><FONT COLOR="#A020F0">if</FONT></B>(iters &lt; iter_test) {
+      <B><FONT COLOR="#A020F0">if</FONT></B>(0 == this-&gt;state) {
+        <B><FONT COLOR="#A020F0">if</FONT></B>(! tmTapeOneCount(this)) {
+          <B><FONT COLOR="#A020F0">return</FONT></B> -3;
+        }
+      }
+    }
+#<B><FONT COLOR="#5F9EA0">endif</FONT></B>
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(stop) {
+    <B><FONT COLOR="#A020F0">return</FONT></B> iters;
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;tape_len &gt;= tape_len_max) {
+    <B><FONT COLOR="#A020F0">return</FONT></B> -2;
+  }
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> -1;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   helpPrint: print helpful information about &quot;visual mode&quot; keys
+//
+//
+// SEE ALSO
+//   tmTapeCurse(), tmTableCurse(), curses library
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">helpPrint</FONT></B>(<B><FONT COLOR="#228B22">void</FONT></B>)
+{
+  <B><FONT COLOR="#228B22">int</FONT></B> max_x, max_y;
+
+  <I><FONT COLOR="#B22222">/* Get size of the curses window */</FONT></I>
+  getmaxyx(stdscr, max_y, max_x);
+
+  <I><FONT COLOR="#B22222">/* Clear a portion of the screen */</FONT></I>
+  max_y -= 8;
+  move(max_y,1);
+  clrtobot();
+  printw(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;'Escape' to halt machine\n&quot;</FONT></B>);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;'d' to toggle debug mode (i.e. single step mode)\n&quot;</FONT></B>);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;'v' to toggle visual display of execution\n&quot;</FONT></B>);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;'?' to display this information\n&quot;</FONT></B>);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;Press any key to return to the Turing Machine visual display\n&quot;</FONT></B>);
+  refresh();
+
+  <I><FONT COLOR="#B22222">/* Wait for a key press */</FONT></I>
+  nodelay(stdscr, FALSE);  <I><FONT COLOR="#B22222">/* blocking input */</FONT></I>
+  getchar();
+
+  clear();
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmCursesDisplay: Display the &quot;visual mode&quot; Turing Machine display
+//
+//
+// DESCRIPTION
+//   The &quot;visual&quot; mode displays the state transition table, the segment
+//   of the tape in the vicinity of the tape head, and some other
+//   information.
+//
+//
+// SEE ALSO
+//   tmTapeCurse(), tmTableCurse(), curses library
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">tmCursesDisplay</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> TuringMachineT *this, int64_t iters)
+{
+  tmTapeCurse(this, 1, 1);
+
+  move(7,1);
+  printw(<B><FONT COLOR="#BC8F8F">&quot;Shift %-10lli    tape length %li\n&quot;</FONT></B>, iters, this-&gt;tape_len);
+  tmTableCurse(this, 9, 1);
+
+  refresh();
+
+  #<B><FONT COLOR="#A020F0">if</FONT></B> __CYGWIN__
+  <I><FONT COLOR="#B22222">// In 'rxvt' under Cygwin, curses refresh does not seem to work
+</FONT></I>  <I><FONT COLOR="#B22222">// unless the terminal output buffer gets flushed, with actual output.
+</FONT></I>  <I><FONT COLOR="#B22222">// This printf, with newline, makes refresh do what we want (except we get an extra newline).
+</FONT></I>  <I><FONT COLOR="#B22222">// printf(&quot;\n&quot;);
+</FONT></I>  <I><FONT COLOR="#B22222">// Sleeping for the duration of a frame refresh also seems to work.
+</FONT></I>
+  usleep(13333);        <I><FONT COLOR="#B22222">// Update no faster than display frame rate.
+</FONT></I>                        <I><FONT COLOR="#B22222">// 75 Hz &lt;==&gt; 13333 microseconds
+</FONT></I>                        <I><FONT COLOR="#B22222">// 60 Hz &lt;==&gt; 16667 microseconds
+</FONT></I>  #endif
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmVisualSimulate: perform Turing Machine simulation with display
+//
+//
+// DESCRIPTION
+//   tmVisualSimulate performs a simulation of a Turing Machine, and
+//   displays information about the simulation as it runs.  The
+//   information displayed includes the state transition table with the
+//   current state highlighted, the current tape head position, and a
+//   segment of the tape in the vicinity of the tape head.  The display
+//   is all textual, and uses the &quot;curses&quot; screen handling package.
+//
+//
+// RETURN VALUE
+//   Return the number of iterations (aka shifts) executed.
+*/</FONT></I>
+int64_t
+<B><FONT COLOR="#0000FF">tmVisualSimulate</FONT></B>(TuringMachineT *this, int64_t max_iters, int64_t tape_len_max, <B><FONT COLOR="#228B22">int</FONT></B> debug)
+{
+  <B><FONT COLOR="#228B22">int</FONT></B>       input          = 0; <I><FONT COLOR="#B22222">/* input character from keyboard */</FONT></I>
+  int64_t iters       = 0; <I><FONT COLOR="#B22222">/* number of shifts Turing Machine has executed */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B>       update_display = 1; <I><FONT COLOR="#B22222">/* flag: update display of Turing Machine? */</FONT></I>
+
+  <I><FONT COLOR="#B22222">/* Set up curses &quot;visual mode&quot; */</FONT></I>
+  initscr();
+
+  cbreak();
+  noecho();  <I><FONT COLOR="#B22222">/* Do not display key presses */</FONT></I>
+  nonl();
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(!debug) {
+    <I><FONT COLOR="#B22222">/* Use non-blocking input.
+    // &quot;non-blocking&quot; means that a read of the keyboard will not
+    // suspend the process until a key is pressed.
+    */</FONT></I>
+    nodelay(stdscr, TRUE);
+  }
+
+  <I><FONT COLOR="#B22222">/* Display &quot;visual mode&quot; stuff */</FONT></I>
+  tmCursesDisplay(this, iters);
+
+  <I><FONT COLOR="#B22222">/* Main simulation loop: */</FONT></I>
+  <I><FONT COLOR="#B22222">/* Note that 'iters' is initialized to '1' instead of '0'.
+  // This is because 'iters' is incremented after the end of the loop
+  // body, but before the end of the loop body, we print out the number
+  // of iterations that have passed.  Also, the very last iteration of
+  // the loop ends with a 'break' statement, which means that the end of
+  // the loop body is not executed on the last iteration.  Since 'iters'
+  // is initialized to '1', the number of iterations that have passed is
+  // correct after the point the 'tmUpdate' call is made.
+  */</FONT></I>
+  <B><FONT COLOR="#A020F0">for</FONT></B>(iters=1; (iters &lt; max_iters) &amp;&amp; (this-&gt;tape_len &lt; tape_len_max); iters++)
+  {
+
+    <I><FONT COLOR="#B22222">/* Read a keyboard key press, if there is one */</FONT></I>
+    input = getch();
+
+    <B><FONT COLOR="#A020F0">if</FONT></B>(input == 27 <I><FONT COLOR="#B22222">/*Escape*/</FONT></I>) {
+      <I><FONT COLOR="#B22222">/* User pressed &quot;Escape&quot; key to halt machine */</FONT></I>
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(input == <B><FONT COLOR="#BC8F8F">'d'</FONT></B>) {
+      <I><FONT COLOR="#B22222">/* Toggle debug mode (i.e., single step mode) */</FONT></I>
+      debug = !debug;
+      <B><FONT COLOR="#A020F0">if</FONT></B>(debug) {
+        nodelay(stdscr, FALSE);         <I><FONT COLOR="#B22222">/* blocking input */</FONT></I>
+      } <B><FONT COLOR="#A020F0">else</FONT></B> {
+        nodelay(stdscr, TRUE);          <I><FONT COLOR="#B22222">/* non-blocking input */</FONT></I>
+      }
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(input == <B><FONT COLOR="#BC8F8F">'v'</FONT></B>) {
+      <I><FONT COLOR="#B22222">/* Toggle the visual progess updating */</FONT></I>
+      update_display = !update_display;
+
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(input == <B><FONT COLOR="#BC8F8F">'?'</FONT></B>) {
+      <I><FONT COLOR="#B22222">/* Print the help screen summary */</FONT></I>
+      helpPrint();
+
+      <I><FONT COLOR="#B22222">/* Restore the visual display */</FONT></I>
+      tmCursesDisplay(this, iters);
+
+      <I><FONT COLOR="#B22222">/* Restore blocking or non-blocking keyboard input */</FONT></I>
+      <B><FONT COLOR="#A020F0">if</FONT></B>(debug) {
+        nodelay(stdscr, FALSE);         <I><FONT COLOR="#B22222">/* blocking input */</FONT></I>
+      } <B><FONT COLOR="#A020F0">else</FONT></B> {
+        nodelay(stdscr, TRUE);          <I><FONT COLOR="#B22222">/* non-blocking input */</FONT></I>
+      }
+    }
+
+    <I><FONT COLOR="#B22222">/* Step forward the Turing Machine */</FONT></I>
+    <B><FONT COLOR="#A020F0">if</FONT></B>(tmUpdate(this)) {
+      <I><FONT COLOR="#B22222">/* The Turing Machine stopped, so break the simulation loop */</FONT></I>
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+    }
+
+    <B><FONT COLOR="#A020F0">if</FONT></B>(update_display) {
+      <I><FONT COLOR="#B22222">/* Display &quot;visual mode&quot; stuff */</FONT></I>
+      tmCursesDisplay(this, iters);
+    }
+  } <I><FONT COLOR="#B22222">/* end of simulation loop */</FONT></I>
+
+  <I><FONT COLOR="#B22222">/* The Turing Machine finished (for one of several reasons) */</FONT></I>
+
+  <I><FONT COLOR="#B22222">/* Do a final visual update to show the final state */</FONT></I>
+  tmCursesDisplay(this, iters);
+
+  <I><FONT COLOR="#B22222">/* Print some info about how the simulation went */</FONT></I>
+  move(0,0);
+  <B><FONT COLOR="#A020F0">if</FONT></B>(iters &gt;= max_iters) {
+    printw(<B><FONT COLOR="#BC8F8F">&quot;MAXIMUM ITERATIONS REACHED -- press a key to finish&quot;</FONT></B>);
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(input == 27) {
+    printw(<B><FONT COLOR="#BC8F8F">&quot;MACHINE HALTED BY USER after %lli shifts -- press a key to finish&quot;</FONT></B>,
+           iters);
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;tape_len &gt;= tape_len_max) {
+    printw(<B><FONT COLOR="#BC8F8F">&quot;TAPE TOO LONG after %lli shifts -- press a key to finish&quot;</FONT></B>,
+           iters);
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    printw(<B><FONT COLOR="#BC8F8F">&quot;MACHINE STOPPED after %lli shifts -- press a key to finish&quot;</FONT></B>,
+           iters);
+  }
+  refresh();
+
+  <I><FONT COLOR="#B22222">/* Wait for a key press so that the display does not disappear
+  // without being seen by the user.
+  */</FONT></I>
+  nodelay(stdscr, FALSE);  <I><FONT COLOR="#B22222">/* blocking input */</FONT></I>
+  input = getch();
+
+  endwin();
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> iters;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTableNext: find next Turing Machine, in lexical order
+//
+//
+// DESCRIPTION
+//   tmTableNext is intended to be used to systematially generate all
+//   possible Turing machine state transition tables.  Given a Turing
+//   machine, the transition table is updated to the lexically next
+//   table.
+//
+//   Lexical order:
+//     Fields are incremented in this order: write, next, move.
+//     Values for write start at 0 and end at charset_max.
+//     Values for next start at 0 and end at (this-&gt;num_states - 1).
+//     Values for move, in order, are MOVE_LEFT, MOVE_RIGHT, and STOP.
+//
+//     There is a further rule for lexical incrementation:  When 'move'
+//     is &quot;STOP&quot; then, for the purposes of finding a busy beaver, you
+//     might as well choose only 'write' &quot;1&quot; entries, and the 'next'
+//     field has no meaning.
+//
+//
+// RETURN VALUES
+//   0 if the states were not exhausted.
+//   1 if this went past the last state.
+//
+//
+// SEE ALSO
+//   tmTableIndex(), tmTableWeed(), tmTableBFS()
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">tmTableNext</FONT></B>(TuringMachineT *this)
+{
+  <B><FONT COLOR="#228B22">int</FONT></B> si;  <I><FONT COLOR="#B22222">/* state index */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> ii;  <I><FONT COLOR="#B22222">/* input index */</FONT></I>
+
+  <B><FONT COLOR="#A020F0">for</FONT></B>(si = 0; si &lt; this-&gt;num_states; si++) {
+    <B><FONT COLOR="#A020F0">for</FONT></B>(ii = 0; ii &lt;= this-&gt;charset_max; ii++) {
+      <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;table[si][ii].write == this-&gt;charset_max) {
+        <I><FONT COLOR="#B22222">/* wrap this field and advance to next field */</FONT></I>
+        this-&gt;table[si][ii].write = 0;
+
+        <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;table[si][ii].next == (this-&gt;num_states - 1)) {
+          <I><FONT COLOR="#B22222">/* wrap this field and advance the next field */</FONT></I>
+          this-&gt;table[si][ii].next = 0;
+
+          <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;table[si][ii].move == STOP) {
+            <I><FONT COLOR="#B22222">/* wrap entire entry and loop */</FONT></I>
+            this-&gt;table[si][ii].write = 0;
+            this-&gt;table[si][ii].next = 0;
+            this-&gt;table[si][ii].move = MOVE_LEFT;
+          } <B><FONT COLOR="#A020F0">else</FONT></B> {
+            <I><FONT COLOR="#B22222">/* increment and return */</FONT></I>
+            this-&gt;table[si][ii].move ++;
+            <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;table[si][ii].move == STOP) {
+              this-&gt;table[si][ii].write = 1;
+              this-&gt;table[si][ii].next = (this-&gt;num_states - 1);
+            }
+            <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+          }
+        } <B><FONT COLOR="#A020F0">else</FONT></B> {
+          <I><FONT COLOR="#B22222">/* increment and return */</FONT></I>
+          this-&gt;table[si][ii].next ++;
+          <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+        }
+      } <B><FONT COLOR="#A020F0">else</FONT></B> {
+        <I><FONT COLOR="#B22222">/* increment and return */</FONT></I>
+        this-&gt;table[si][ii].write ++;
+        <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+      }
+    }
+  }
+  <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/*
+// RETURN VALUES
+//   Return 0 if this table does not contain a STOP.
+//   Return nonzero if this table contains a STOP.
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">tmTableContainsStop</FONT></B>(TuringMachineT *this)
+{
+  <B><FONT COLOR="#228B22">int</FONT></B> si;            <I><FONT COLOR="#B22222">/* state index */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> ii;            <I><FONT COLOR="#B22222">/* input index */</FONT></I>
+
+  <B><FONT COLOR="#A020F0">for</FONT></B>(si = 0; si &lt; this-&gt;num_states; si++) {
+    <B><FONT COLOR="#A020F0">for</FONT></B>(ii = 0; ii &lt;= this-&gt;charset_max; ii++) {
+      <B><FONT COLOR="#A020F0">if</FONT></B>(STOP == this-&gt;table[si][ii].move) {
+        <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+      }
+    }
+  }
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTableBFS: breadth first search of Turing Machine table
+//
+//
+// DESCRIPTION
+//   tmTableBFS does a fairly ignorant descent through a Turing Machine
+//   table to see whether possibly reachable entries satisfy some
+//   criterion, which is determined by 'test'.
+//
+//   Algorithm:
+//     Push state 0 into FIFO.
+//     Loop until (state counter exceeds number of states), or (FIFO is empty):
+//       Pop the FIFO to get a state.
+//       For each entry of this state:
+//         If entry satisfies test, then return 1.
+//         Push next state of this entry into FIFO.
+//       Increment state conter.
+//
+//
+// RETURN VALUES
+//   Return result of 'test' if test() ever gives nonzero result.
+//   Return zero otherwise.
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">tmTableBFS</FONT></B>(TuringMachineT *this, <B><FONT COLOR="#228B22">int</FONT></B> test(<B><FONT COLOR="#228B22">const</FONT></B> Entry * <B><FONT COLOR="#228B22">const</FONT></B>))
+{
+  <B><FONT COLOR="#228B22">int</FONT></B> count = 0;             <I><FONT COLOR="#B22222">/* iteration counter */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> *state_pushed = NULL;  <I><FONT COLOR="#B22222">/* array of Booleans */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> state;                 <I><FONT COLOR="#B22222">/* index of state being considered */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> test_value;            <I><FONT COLOR="#B22222">/* value returned by test */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> ii;                    <I><FONT COLOR="#B22222">/* table input character index */</FONT></I>
+  <B><FONT COLOR="#228B22">static</FONT></B> FifoT *fifo = NULL; <I><FONT COLOR="#B22222">/* used for breadth first search */</FONT></I>
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(fifo == NULL) {
+    <I><FONT COLOR="#B22222">/* We will be using a FIFO of the same size each time so there's
+    // no reason to allocate it each time.  Just use one FIFO and recycle
+    // it.
+    */</FONT></I>
+    fifo = fifoNew(this-&gt;num_states * (this-&gt;charset_max + 1));
+  }
+
+  <I><FONT COLOR="#B22222">/* Allocate the Boolean array in stack space (automatic) */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>((state_pushed = alloca(<B><FONT COLOR="#A020F0">sizeof</FONT></B>(<B><FONT COLOR="#228B22">int</FONT></B>) * (this-&gt;num_states + 1))) == NULL)
+  {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;tmTableBFS: out of memory\n&quot;</FONT></B>);
+    fifoDestroy(fifo);
+    abort();
+    <B><FONT COLOR="#A020F0">return</FONT></B> -1;
+  }
+
+  <I><FONT COLOR="#B22222">/* Reset Booleans to false: no states pushed yet */</FONT></I>
+  {
+    <B><FONT COLOR="#228B22">int</FONT></B> si;
+    <B><FONT COLOR="#A020F0">for</FONT></B>(si=0; si &lt;= this-&gt;num_states; si++) {
+      state_pushed[si] = 0;
+    }
+  }
+
+  <I><FONT COLOR="#B22222">/* Push state 0 into fifo */</FONT></I>
+  fifoAdd(fifo, (<B><FONT COLOR="#228B22">void</FONT></B>*)1);
+  state_pushed[0] = 1;
+  count = 1;
+
+  <B><FONT COLOR="#A020F0">while</FONT></B>( (count &lt;= this-&gt;num_states) &amp;&amp; ((state=(<B><FONT COLOR="#228B22">int</FONT></B>)fifoPop(fifo))!=0) )
+  {
+    <I><FONT COLOR="#B22222">/* For the FIFO, states are indexed starting at 1, so adjust */</FONT></I>
+    state--;
+
+    <B><FONT COLOR="#A020F0">for</FONT></B>(ii=0; ii &lt;= this-&gt;charset_max; ii++) {
+      <B><FONT COLOR="#A020F0">if</FONT></B>(test != NULL) {
+        <B><FONT COLOR="#A020F0">if</FONT></B>((test_value=test(&amp;this-&gt;table[state][ii]))) {
+          fifoReset(fifo);
+          <B><FONT COLOR="#A020F0">return</FONT></B> test_value;
+        }
+      }
+
+      <I><FONT COLOR="#B22222">/* If 'next' state has not been in the FIFO, push it in */</FONT></I>
+      <B><FONT COLOR="#A020F0">if</FONT></B>(!state_pushed[this-&gt;table[state][ii].next]) {
+        <I><FONT COLOR="#B22222">/* Push next state of this entry into fifo.
+        // (For the FIFO, states are indexed starting at 1, so adjust)
+        */</FONT></I>
+        fifoAdd(fifo, (<B><FONT COLOR="#228B22">void</FONT></B>*)(this-&gt;table[state][ii].next + 1));
+        state_pushed[this-&gt;table[state][ii].next] = 1;
+
+        count ++;
+      }
+    }
+  }
+
+  <I><FONT COLOR="#B22222">/* Table feature was not reachable */</FONT></I>
+  fifoReset(fifo);
+  <B><FONT COLOR="#A020F0">if</FONT></B>(test != NULL) {
+    <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    <B><FONT COLOR="#A020F0">return</FONT></B> count;
+  }
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* found* functions: test functions for tmTableBFS
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">foundStop</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> Entry * <B><FONT COLOR="#228B22">const</FONT></B> this)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;move == STOP) <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+
+
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">foundOne</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> Entry * <B><FONT COLOR="#228B22">const</FONT></B> this)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;write == 1) <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+
+
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">foundLeft</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> Entry * <B><FONT COLOR="#228B22">const</FONT></B> this)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;move == MOVE_LEFT) <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+
+
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">foundRight</FONT></B>(<B><FONT COLOR="#228B22">const</FONT></B> Entry * <B><FONT COLOR="#228B22">const</FONT></B> this)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(this-&gt;move == MOVE_RIGHT) <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmTableWeed: weed out useless (for busy beaver) Turing Machine tables
+//
+//
+// RETURN VALUES
+//   Return 0 if this table is not rejected;
+//   Return nonzero if this table is rejected.
+*/</FONT></I>
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">tmTableWeed</FONT></B>(TuringMachineT *this)
+{
+  <B><FONT COLOR="#A020F0">if</FONT></B>(0 == this-&gt;table[0][0].next) {
+    <B><FONT COLOR="#A020F0">return</FONT></B> 1;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(STOP == this-&gt;table[0][0].move) {
+    <B><FONT COLOR="#A020F0">return</FONT></B> 2;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(!tmTableContainsStop(this)) {
+    <I><FONT COLOR="#B22222">/* No stops present in the table: never stops */</FONT></I>
+    <B><FONT COLOR="#A020F0">return</FONT></B> 3;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(!tmTableBFS(this, foundStop)) {
+    <I><FONT COLOR="#B22222">/* Stop not reachable: never stops */</FONT></I>
+    <B><FONT COLOR="#A020F0">return</FONT></B> 4;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(tmTableBFS(this, NULL) &lt; this-&gt;num_states) {
+    <I><FONT COLOR="#B22222">/* Machine does not refer to all states */</FONT></I>
+    <B><FONT COLOR="#A020F0">return</FONT></B> 5;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(!tmTableBFS(this, foundOne)) {
+    <I><FONT COLOR="#B22222">/* No ones reachable: this machine can not be a useful busy beaver */</FONT></I>
+    <B><FONT COLOR="#A020F0">return</FONT></B> 6;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(tmTableBFS(this, foundLeft) &amp;&amp; !tmTableBFS(this, foundRight)) {
+    <I><FONT COLOR="#B22222">/* Machine moves only to the left */</FONT></I>
+    <B><FONT COLOR="#A020F0">return</FONT></B> 7;
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(tmTableBFS(this, foundRight) &amp;&amp; !tmTableBFS(this, foundLeft)) {
+    <I><FONT COLOR="#B22222">/* Machine moves only to the right */</FONT></I>
+    <B><FONT COLOR="#A020F0">return</FONT></B> 8;
+  }
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* turing_machine: global reference to current Turing machine
+//   intended for use in interrupt handler
+*/</FONT></I>
+<B><FONT COLOR="#228B22">static</FONT></B> TuringMachineT *turing_machine;
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   handle_int: signal handler for busy beaver search
+//
+//
+// DESCRIPTION
+//   Searching for busy beavers takes a long time.  In order to be able
+//   to continue the search where it left off, it is useful to trap
+//   signals which would interrupt the process.  handle_int catches
+//   some signals and outputs enough information to continue the search
+//   for busy beavers where the search left off.
+*/</FONT></I>
+<B><FONT COLOR="#228B22">void</FONT></B>
+<B><FONT COLOR="#0000FF">handle_int</FONT></B>(<B><FONT COLOR="#228B22">int</FONT></B> signum)
+{
+  printf(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+  tmTablePrint(turing_machine);
+  tmTableWrite(turing_machine, <B><FONT COLOR="#BC8F8F">&quot;interrupt.tm&quot;</FONT></B>);
+  exit(1);
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* PERIOD: how often to output a Turing machine table, for restart purposes
+*/</FONT></I>
+#<B><FONT COLOR="#5F9EA0">define</FONT></B> <FONT COLOR="#B8860B">PERIOD</FONT> (21*21*21*21+1)
+
+
+<I><FONT COLOR="#B22222">/* PATIENCE: print some output so the user knows hw the search is going
+//
+// Also occasionally output a table so that the search can be restarted
+// without losing a lot of effort, in case of a catastrophe, like a
+// system crash.
+*/</FONT></I>
+#<B><FONT COLOR="#5F9EA0">define</FONT></B> <FONT COLOR="#B8860B">PATIENCE</FONT> \
+{ \
+  <B><FONT COLOR="#A020F0">if</FONT></B>(weed&gt;5) printf(<B><FONT COLOR="#BC8F8F">&quot;%i&quot;</FONT></B>,weed); \
+  fflush(stdout); \
+  <B><FONT COLOR="#A020F0">if</FONT></B>(table_count % PERIOD == 0) { \
+    tmTableWrite(this, <B><FONT COLOR="#BC8F8F">&quot;periodic.tm&quot;</FONT></B>); \
+    printf(<B><FONT COLOR="#BC8F8F">&quot;\ntable %014lli, %lli simulated\n&quot;</FONT></B>, table_count, table_sim_count); \
+    tmTablePrint(this); \
+  } \
+}
+
+
+
+
+<I><FONT COLOR="#B22222">/* NAME
+//   tmBusyBeaverSearch: Search for a busy beaver Turing machine
+//
+// ARGUMENTS
+//   this (in/out): Turing machine
+//
+//   max_iters (in): maximum number of iterations for each machine
+//
+//   tape_len_max (in): maximum tape length for each machine
+//
+//   visual (in): whether to simulate machine in visual mode
+//
+//   debug (in): whether to start machine simulation in debug mode
+//
+//
+// DESCRIPTION
+//   A &quot;busy beaver&quot; is a Turing machine that prints out a lot of
+//   '1's.  There is a sort of unofficial contest to find the most
+//   prolific 5-state, 2-character busy beaver.  Actually, the contest
+//   is somewhat official:  Scientific American had an article in
+//   Computer Recreations in the mid 1980's that posed this problem as
+//   a contest.  Several solutions are known, but so far nobody has
+//   demonstrated that a particular solution is the best one.
+//   tmBusyBeaverSearch searches for busy beavers, and is not limited
+//   to 5-state, 2-input Turing machines.  Any Turing machine
+//   configuration is possible, although smaller busy beavers are not
+//   interesting and larger ones have an impractically large
+//   configuration space.  In fact, the configuration space for the
+//   5-state, 2-character busy beaver is 21^10 = 16,679,880,978,201 (16
+//   trillion).
+//
+//   The famous &quot;halting problem&quot; for Turing machines and their
+//   equivalent asks whether it is possible to determine whether a
+//   given machine will ever stop on a given tape.  It is known that
+//   this problem has no solution.  Therefore, it is not a trivial task
+//   to search for busy beavers since it is not known in advance
+//   whether a particular machine will ever stop.  Therefore, finite
+//   limits must be set to make the search practical.  The limits are
+//   the maximum number of iterations 'max_iters' and the maximum
+//   length of the tape, 'tape_len_max'.  In practice, the number of
+//   iterations of a busy beaver is several orders of magnitude larger
+//   than its tape length.  For example, the busy beaver which
+//   generates 4098 '1's has a tape of length less than 25000, but
+//   executes 47,176,870.
+//
+//   Several simple methods are employed to attempt to determine ahead
+//   of time whether a machine will make a good busy beaver.  See
+//   tmTableWeed() for a list of these methods.  More sophisticated
+//   methods are certainly possible (such as symmetry under state-row
+//   swapping or simple loop checking), and could considerably reduce the
+//   effective search space.
+*/</FONT></I>
+int64_t
+<B><FONT COLOR="#0000FF">tmBusyBeaverSearch</FONT></B>(TuringMachineT *this, int64_t max_iters,
+                   int64_t tape_len_max, <B><FONT COLOR="#228B22">int</FONT></B> visual, <B><FONT COLOR="#228B22">int</FONT></B> debug)
+{
+  <B><FONT COLOR="#228B22">int</FONT></B> weed;
+  int64_t table_count = -1;
+  int64_t table_sim_count = 0;
+  int64_t iters;
+  int64_t ones_max = 0;
+
+  turing_machine = this;
+
+  signal(SIGINT, handle_int);
+  signal(SIGHUP, handle_int);
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(table_count &lt; 0) {
+    table_count = tmTableIndex(this);
+  }
+
+  <B><FONT COLOR="#A020F0">do</FONT></B> {
+    <B><FONT COLOR="#A020F0">while</FONT></B>((weed=tmTableWeed(this))) {
+      tmTableNext(this);
+      PATIENCE;
+      table_count ++;
+    }
+
+    table_sim_count ++;
+    <B><FONT COLOR="#A020F0">if</FONT></B>(debug) {
+      iters = tmVisualSimulate(this, max_iters, tape_len_max, debug);
+    } <B><FONT COLOR="#A020F0">else</FONT></B> {
+      iters = tmSimulate(this, max_iters, tape_len_max);
+    }
+
+    <I><FONT COLOR="#B22222">/* Print some information about the how the simulation went */</FONT></I>
+    <B><FONT COLOR="#A020F0">if</FONT></B>(iters &gt;= 0) {
+      int64_t count = tmTapeOneCount(this);
+
+      <B><FONT COLOR="#A020F0">if</FONT></B>(count &gt;= (ones_max-1)) {
+        <B><FONT COLOR="#228B22">char</FONT></B> filename[128];
+
+        printf(<B><FONT COLOR="#BC8F8F">&quot;\ntable %014lli ties, with %lli\n&quot;</FONT></B>, table_count, ones_max);
+
+        ones_max = MAX(count, ones_max);
+        printf(<B><FONT COLOR="#BC8F8F">&quot;\n&quot;</FONT></B>);
+        tmTablePrint(this);
+
+        sprintf(filename, <B><FONT COLOR="#BC8F8F">&quot;max%04lli.tm&quot;</FONT></B>, count);
+        tmTableWrite(this, filename);
+
+        sprintf(filename, <B><FONT COLOR="#BC8F8F">&quot;max%04lli.tape&quot;</FONT></B>, count);
+        tmTapeWrite(this, filename);
+
+        printf(<B><FONT COLOR="#BC8F8F">&quot;table %014lli\n&quot;</FONT></B>, table_count);
+        printf(<B><FONT COLOR="#BC8F8F">&quot;The machine executed %lli shifts\n&quot;</FONT></B>, iters);
+        printf(<B><FONT COLOR="#BC8F8F">&quot;tape had %lli 1's\n&quot;</FONT></B>, count);
+        printf(<B><FONT COLOR="#BC8F8F">&quot;tape was %lli frames long\n&quot;</FONT></B>, this-&gt;tape_len);
+      }
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(-1 == iters) {
+      printf(<B><FONT COLOR="#BC8F8F">&quot;i&quot;</FONT></B>);
+      fflush(stdout);
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(-2 == iters) {
+      printf(<B><FONT COLOR="#BC8F8F">&quot;t&quot;</FONT></B>);
+      fflush(stdout);
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(-3 == iters) {
+      printf(<B><FONT COLOR="#BC8F8F">&quot;L&quot;</FONT></B>);
+      fflush(stdout);
+    }
+
+    <I><FONT COLOR="#B22222">/* Reset the Turing machine */</FONT></I>
+    this-&gt;state = 0;
+    tmTapeBlank(this);
+
+    PATIENCE;
+
+    table_count ++;
+  } <B><FONT COLOR="#A020F0">while</FONT></B>(!tmTableNext(this)) ;
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+
+
+
+
+<B><FONT COLOR="#228B22">int</FONT></B>
+<B><FONT COLOR="#0000FF">main</FONT></B>(<B><FONT COLOR="#228B22">int</FONT></B> argc, <B><FONT COLOR="#228B22">char</FONT></B> **argv)
+{
+  <B><FONT COLOR="#228B22">int</FONT></B> debug             = 0; <I><FONT COLOR="#B22222">/* flag: debug mode (i.e. single step mode) */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> visual            = 0; <I><FONT COLOR="#B22222">/* flag: visual mode. */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> verbose           = 0; <I><FONT COLOR="#B22222">/* flag: verbose mode */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> search            = 0; <I><FONT COLOR="#B22222">/* flag: search mode */</FONT></I>
+
+  int64_t iters = 0;   <I><FONT COLOR="#B22222">/* number of shifts the Turing Machine has executed */</FONT></I>
+
+  <I><FONT COLOR="#B22222">// max_iters: maximum number of iterations before the machine is stopped.
+</FONT></I>  <B><FONT COLOR="#228B22">const</FONT></B> int64_t max_iters     = INT64_MAX ;
+
+  <B><FONT COLOR="#228B22">const</FONT></B> int64_t tape_len_max      = 409750;
+
+  TuringMachine tm              = tmNew();
+
+
+  <I><FONT COLOR="#B22222">/* Command line argument parsing variables.  See getopt() */</FONT></I>
+  <B><FONT COLOR="#228B22">int</FONT></B> oc;
+  <B><FONT COLOR="#228B22">int</FONT></B> err_flag                  = 0;
+  <B><FONT COLOR="#228B22">extern</FONT></B> <B><FONT COLOR="#228B22">char</FONT></B> *optarg;
+  <B><FONT COLOR="#228B22">extern</FONT></B> <B><FONT COLOR="#228B22">int</FONT></B> optind, opterr, optopt;
+  <B><FONT COLOR="#228B22">char</FONT></B> *machine_file            = NULL;
+  <B><FONT COLOR="#228B22">char</FONT></B> *tape_file               = NULL;
+
+
+  <I><FONT COLOR="#B22222">/* Parse command line arguments */</FONT></I>
+  <B><FONT COLOR="#A020F0">while</FONT></B> ((oc = getopt(argc, argv, <B><FONT COLOR="#BC8F8F">&quot;m:t:dsvV&quot;</FONT></B>)) != -1) {
+    <B><FONT COLOR="#A020F0">switch</FONT></B> (oc) {
+      <B><FONT COLOR="#A020F0">case</FONT></B> <B><FONT COLOR="#BC8F8F">'m'</FONT></B>:
+        machine_file = optarg;
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+
+      <B><FONT COLOR="#A020F0">case</FONT></B> <B><FONT COLOR="#BC8F8F">'t'</FONT></B>:
+        tape_file = optarg;
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+
+      <B><FONT COLOR="#A020F0">case</FONT></B> <B><FONT COLOR="#BC8F8F">'d'</FONT></B>:
+        debug = 1;
+        visual = 1;
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+
+      <B><FONT COLOR="#A020F0">case</FONT></B> <B><FONT COLOR="#BC8F8F">'s'</FONT></B>:
+        search = 1;
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+
+      <B><FONT COLOR="#A020F0">case</FONT></B> <B><FONT COLOR="#BC8F8F">'v'</FONT></B>:
+        visual = 1;
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+
+      <B><FONT COLOR="#A020F0">case</FONT></B> <B><FONT COLOR="#BC8F8F">'V'</FONT></B>:
+        verbose = 1;
+      <B><FONT COLOR="#A020F0">break</FONT></B>;
+
+      <B><FONT COLOR="#A020F0">case</FONT></B> <B><FONT COLOR="#BC8F8F">'?'</FONT></B>:
+        err_flag++;
+    }
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B> (err_flag) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;usage: %s -m machine_file -t tape_file [-d] [-v] [-V]\n&quot;</FONT></B>,
+            argv[0]);
+    exit(2);
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(machine_file == NULL) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;%s: must specify machine_file\n&quot;</FONT></B>, argv[0]);
+    exit(3);
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(tape_file == NULL) {
+    fprintf(stderr, <B><FONT COLOR="#BC8F8F">&quot;%s: tape_file not specified.  Assuming blank.\n&quot;</FONT></B>, argv[0]);
+  }
+
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(verbose) {
+    <I><FONT COLOR="#B22222">/* max_iters is printed partly for information and partly to see
+    // whether a number as large as max_iters is properly being stored
+    // in the integer variable.
+    */</FONT></I>
+    printf(<B><FONT COLOR="#BC8F8F">&quot;maximum iterations = %lli\n&quot;</FONT></B>, max_iters);
+  }
+
+  <I><FONT COLOR="#B22222">/* Read the Turing Machine state transition table */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>(tmTableRead(tm, machine_file) &lt; 0) exit(1);
+
+  <I><FONT COLOR="#B22222">/* Read the Turing Machine tape */</FONT></I>
+  <B><FONT COLOR="#A020F0">if</FONT></B>(tape_file != NULL) {
+    <B><FONT COLOR="#A020F0">if</FONT></B>(tmTapeRead(tm, tape_file) &lt; 0) exit(2);
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    tmTapeBlank(tm);
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(verbose &amp;&amp; !visual) {
+    tmTablePrint(tm);
+    tmTapePrint(tm);
+    printf(<B><FONT COLOR="#BC8F8F">&quot;table is lexically %014lli\n&quot;</FONT></B>, tmTableIndex(tm));
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(search) {
+    iters = tmBusyBeaverSearch(tm, max_iters, tape_len_max, visual, debug);
+
+  } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(visual) {
+    iters = tmVisualSimulate(tm, max_iters, tape_len_max, debug);
+
+  } <B><FONT COLOR="#A020F0">else</FONT></B> {
+    <I><FONT COLOR="#B22222">/* Execute Turing Machine without &quot;visual mode&quot; display */</FONT></I>
+    iters = tmSimulate(tm, max_iters, tape_len_max);
+  }
+
+  <B><FONT COLOR="#A020F0">if</FONT></B>(verbose) {
+    <I><FONT COLOR="#B22222">/* Print some information about the how the simulation went */</FONT></I>
+
+    tmTapeWrite(tm, <B><FONT COLOR="#BC8F8F">&quot;out.tape&quot;</FONT></B>);
+    printf(<B><FONT COLOR="#BC8F8F">&quot;tape was %lli frames long\n&quot;</FONT></B>, tm-&gt;tape_len);
+
+    <B><FONT COLOR="#A020F0">if</FONT></B>(iters &gt;= 0) {
+      int64_t count = tmTapeOneCount(tm);
+
+      tmTapePrint(tm);
+      printf(<B><FONT COLOR="#BC8F8F">&quot;The machine executed %lli shifts\n&quot;</FONT></B>, iters);
+      printf(<B><FONT COLOR="#BC8F8F">&quot;tape had %lli 1's\n&quot;</FONT></B>, count);
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(-1 == iters) {
+      printf(<B><FONT COLOR="#BC8F8F">&quot;too many iterations\n&quot;</FONT></B>);
+    } <B><FONT COLOR="#A020F0">else</FONT></B> <B><FONT COLOR="#A020F0">if</FONT></B>(-2 == iters) {
+      printf(<B><FONT COLOR="#BC8F8F">&quot;tape too long\n&quot;</FONT></B>);
+    }
+  }
+
+  <B><FONT COLOR="#A020F0">return</FONT></B> 0;
+}
+</PRE>
+<HR>
+<ADDRESS>Generated by <A HREF="http://www.iki.fi/~mtr/genscript/">GNU enscript 1.6.3</A>.</ADDRESS>
+</BODY>
+</HTML>
