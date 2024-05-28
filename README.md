@@ -144,3 +144,5 @@ The busy beaver rejection algorithms are simple and err on the side of safety, i
 ## See also
 
 https://www.mijagourlay.com/turingmachine
+
+https://youtu.be/nyJcf_wZaN8
